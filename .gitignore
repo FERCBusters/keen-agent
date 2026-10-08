@@ -1,0 +1,5 @@
+/dist/
+*.db
+*.db.lock
+status.json
+release.sh

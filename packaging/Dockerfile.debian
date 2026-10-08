@@ -1,0 +1,11 @@
+ARG RELEASE=13
+FROM debian:${RELEASE} AS build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar gzip build-essential dpkg-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN sh packaging/install-go.sh
+ENV PATH="/usr/local/go/bin:${PATH}" GOTOOLCHAIN=local
+RUN go test ./... && go vet ./... && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o dist/keen-agent ./cmd/keen-agent
+RUN sh packaging/build-deb.sh
+FROM scratch AS packages
+COPY --from=build /out/ /

@@ -1,0 +1,5 @@
+KEEN Agent
+Distributed under the same Apache License 2.0 as KEEN.
+
+This distribution includes software from the Go project, bbolt, go-yaml and
+Go's x/sys module. Their copyright and license notices are in licenses/.

@@ -1,0 +1,81 @@
+# HTTPS endpoint, including the /api prefix when using KEEN's standard UI proxy.
+endpoint: https://keen.example.org/api/v1/otlp/logs
+token_file: /etc/keen-agent/token
+# Optional custom CA, with normal hostname verification still enabled:
+# ca_file: /etc/keen-agent/organisation-ca.pem
+state_dir: /var/lib/keen-agent
+queue_mb: 256
+poll_seconds: 5
+# 0 retains unsent records until delivery; a positive value explicitly permits
+# discarding older queued records. Discards increment the health counter.
+retention_days: 0
+# Applies to a journal source's first read only. Files start at byte zero.
+initial_lookback: 24h
+# RE2 patterns; matching text is replaced before it reaches the disk spool.
+redact:
+  - '(?i)Bearer\s+[A-Za-z0-9._~+/=-]+'
+sources:
+  - name: system
+    kind: journal
+    parser: syslog
+    # units: [sshd.service, nginx.service]
+    # include: '(?i)failed|error|accepted|started|stopped'
+
+  # Enable the sources that exist on this host. Avoid collecting the same
+  # messages through both journald and files unless that duplication is intended.
+  # Keep an uncompressed rotation window longer than expected outages.
+  # - name: dpkg
+  #   kind: file
+  #   parser: dpkg
+  #   paths: [/var/log/dpkg.log, /var/log/dpkg.log.1]
+  # - name: apt-history
+  #   kind: file
+  #   parser: apt
+  #   paths: [/var/log/apt/history.log, /var/log/apt/history.log.1]
+  # - name: dnf
+  #   kind: file
+  #   parser: dnf
+  #   paths: [/var/log/dnf.rpm.log, /var/log/dnf.rpm.log.1]
+  # - name: nginx-access
+  #   kind: file
+  #   parser: nginx
+  #   paths: [/var/log/nginx/access.log, /var/log/nginx/access.log.1]
+  #   exclude: 'GET /health '
+  # - name: php-errors
+  #   kind: file
+  #   parser: php
+  #   paths: [/var/log/php/error.log, /var/log/php/error.log.1]
+  #   multiline_start: '^\['
+  # - name: linux-audit
+  #   kind: file
+  #   parser: auditd
+  #   paths: [/var/log/audit/audit.log, /var/log/audit/audit.log.1]
+
+# Optional under a source (not at the top level):
+#   exclude_when:
+#     - field: client.ip
+#       operator: in_cidr
+#       value: 192.0.2.0/24
+#     - field: status
+#       operator: equals
+#       value: "200"
+# ANY exclude match discards the event before queuing. include_when, if supplied,
+# requires ANY match first. Exclusions win; missing fields do not match.
+
+#   exclude_match: all  # AND: require every exclude_when condition; default any (OR)
+
+  # OSSEC manager alerts; see docs/ossec.md for permissions and rotation.
+  # - name: ossec
+  #   kind: file
+  #   parser: ossec
+  #   paths:
+  #     - /var/ossec/logs/alerts/alerts.json
+  #     - /var/ossec/logs/alerts/*/*/ossec-alerts-*.json
+  #   exclude_match: all
+  #   exclude_when:
+  #     - field: source.ip
+  #       operator: in_cidr
+  #       value: 192.0.2.0/24
+  #     - field: ossec.rule.id
+  #       operator: equals
+  #       value: '5701'

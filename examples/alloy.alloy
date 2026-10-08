@@ -1,0 +1,68 @@
+// Alternative collector example. Verify against the Alloy version you deploy.
+// filelog currently requires: --stability.level=public-preview
+// Provision these private storage directories for the Alloy service account.
+// Source: https://grafana.com/docs/alloy/latest/reference/components/otelcol/
+local.file "keen_token" {
+  filename  = "/etc/alloy/keen-token"
+  is_secret = true
+}
+
+otelcol.storage.file "keen_cursors" {
+  directory = "/var/lib/alloy/keen-cursors"
+}
+
+otelcol.storage.file "keen_queue" {
+  directory = "/var/lib/alloy/keen-queue"
+}
+
+otelcol.receiver.filelog "keen" {
+  include           = ["/var/log/dpkg.log", "/var/log/dpkg.log.1"]
+  start_at          = "end"
+  include_file_path = true
+  max_log_size      = "8KiB"
+  storage           = otelcol.storage.file.keen_cursors.handler
+  retry_on_failure {
+    enabled          = true
+    max_elapsed_time = "0s"
+  }
+  output {
+    logs = [otelcol.processor.batch.keen.input]
+  }
+}
+
+otelcol.processor.batch "keen" {
+  send_batch_size     = 32
+  send_batch_max_size = 32
+  timeout            = "5s"
+  output {
+    logs = [otelcol.exporter.otlphttp.keen.input]
+  }
+}
+
+otelcol.exporter.otlphttp "keen" {
+  encoding      = "json"
+  logs_endpoint = "https://keen.example.org/api/v1/otlp/logs"
+  client {
+    endpoint = "https://keen.example.org/api"
+    headers = {
+      "Authorization" = "Bearer " + string.trim_space(local.file.keen_token.content),
+    }
+    compression = "gzip"
+  }
+  sending_queue {
+    enabled       = true
+    storage       = otelcol.storage.file.keen_queue.handler
+    queue_size    = 1000
+    num_consumers = 1
+  }
+  retry_on_failure {
+    enabled          = true
+    initial_interval = "5s"
+    max_interval     = "300s"
+    max_elapsed_time = "0s"
+  }
+}
+// Add collection-side redaction appropriate to your logs. This example sends
+// generic OTLP records without KEEN Agent's parsers or heartbeat protocol.
+// The batch processor has an in-memory stage before the persistent exporter
+// queue; review your collector's crash-loss guarantees and monitor failed sends.
