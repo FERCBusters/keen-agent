@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "0.1.5"
+const version = "0.1.6"
 
 func main() {
 	if err := run(); err != nil {
@@ -24,7 +24,7 @@ func main() {
 }
 func run() error {
 	path := flag.String("config", "/etc/keen-agent/config.yaml", "configuration file")
-	command := flag.String("command", "run", "run, check, status, purge-queue or version")
+	command := flag.String("command", "run", "run, check, status, retry-credentials, purge-queue or version")
 	confirmPurge := flag.Bool("confirm-discard", false, "confirm permanent deletion of queued, undelivered events")
 	flag.Parse()
 	if *command == "version" {
@@ -36,7 +36,7 @@ func run() error {
 		return e
 	}
 	if *command == "check" {
-		_, e = readPrivate(c.TokenFile, 4096, true)
+		e = checkCredentialConfig(c)
 		if e != nil {
 			return e
 		}
@@ -59,11 +59,6 @@ func run() error {
 		return e
 	}
 	defer sp.db.Close()
-	if *command == "status" {
-		n, b, r := sp.stats()
-		fmt.Printf("queued=%d bytes=%d rejected_or_gaps=%d\n", n, b, r)
-		return nil
-	}
 	if *command == "purge-queue" {
 		if !*confirmPurge {
 			return errors.New("purge-queue requires -confirm-discard; stop the service first")
@@ -79,6 +74,15 @@ func run() error {
 		fmt.Printf("Discarded %d queued events; collection checkpoints preserved. Restart the service to refresh status.\n", n)
 		return nil
 	}
+    if *command == "retry-credentials" {
+        if c.Enrollment == nil { return errors.New("retry-credentials requires enrollment configuration") }
+        state, err := loadIdentity(c)
+        if err != nil { return err }
+        state.Blocked=""; state.Failures=0; state.NextAttempt=time.Time{}
+        if err = saveIdentity(c,state); err != nil { return err }
+        fmt.Println("Credential retry enabled for the existing identity/attempt. Restart the service; revoked or expired credentials still require administrator action.")
+        return nil
+    }
 	if *command != "run" {
 		return errors.New("unknown command")
 	}
@@ -86,7 +90,9 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	defer h.CloseIdleConnections()
+    defer h.CloseIdleConnections()
+    manager, e := newCredentialManager(c, sp)
+    if e != nil { return e }
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(signals)
@@ -127,8 +133,15 @@ func run() error {
 				status[source.Name] = message
 			}
 		}
-		drain := false
-		if !blocked && time.Now().After(nextSend) {
+        credentialsReady := true
+        if manager != nil {
+            var credentialErr error
+            credentialsReady, credentialErr = manager.maintain(h,time.Now())
+            if credentialErr != nil { if persistenceFailure(credentialErr) { return credentialErr }; log.Printf("credentials: %s",credentialErr) }
+            if manager.state.Blocked != "" { blocked = true }
+        }
+        drain := false
+        if credentialsReady && !blocked && time.Now().After(nextSend) {
 			before, _, _ := sp.stats()
 			e = send(c, sp, h)
 			if e == nil {
@@ -152,8 +165,11 @@ func run() error {
 				if errors.As(e, &de) {
 					delay = max(delay, de.retry)
 					if de.status >= 400 && de.status < 500 && de.status != 408 && de.status != 429 {
-						blocked = true
-					}
+                        blocked = true
+                        if manager != nil && (de.status == 401 || de.status == 403) {
+                            if err := manager.block("agent authentication rejected; administrator intervention required"); err != nil { if persistenceFailure(err) { return err }; log.Printf("credentials: %s",err) }
+                        }
+                    }
 				}
 				if strings.Contains(e.Error(), "partial success") {
 					blocked = true
@@ -163,7 +179,7 @@ func run() error {
 			}
 		}
 		n, b, r := sp.stats()
-		health := map[string]any{"version": version, "queued": n, "queue_bytes": b, "rejected": r, "sources": status, "delivery_blocked": blocked, "updated_at": time.Now().UTC()}
+		health := map[string]any{"version": version, "queued": n, "queue_bytes": b, "rejected": r, "sources": status, "delivery_blocked": blocked || !credentialsReady, "updated_at": time.Now().UTC()}
 		health["filtered_by_source"] = sp.filteredStats(c.Sources)
 		health["delivered_since_start"] = delivered
 		health["delivery_batches_since_start"] = deliveredBatches
@@ -175,13 +191,29 @@ func run() error {
 			log.Printf("delivery progress: delivered=%d batches=%d queued=%d bytes=%d", delivered, deliveredBatches, n, b)
 			nextReport = time.Now().Add(time.Minute)
 		}
-		if time.Now().After(nextHealth) {
+		if credentialsReady && (manager == nil || manager.state.Blocked == "") && time.Now().After(nextHealth) {
 			nextHealth = time.Now().Add(time.Minute)
 			if err := heartbeat(c, h, health); err != nil {
-				log.Printf("health: %s", err)
+                log.Printf("health: %s", err)
+                var de deliveryError
+                if manager != nil && errors.As(err,&de) && (de.status==401 || de.status==403) {
+                    blocked=true
+                    if err := manager.block("agent authentication rejected; administrator intervention required"); err != nil { if persistenceFailure(err) { return err }; log.Printf("credentials: %s",err) }
+                }
 			}
 		}
-		encoded, _ := json.MarshalIndent(health, "", "  ")
+        health["delivery_blocked"] = blocked || !credentialsReady
+        // Enrollment diagnostics are local only; keep the receiver's strict
+        // heartbeat schema unchanged and never serialize the private identity.
+        if manager != nil {
+            health["enrollment_profile_id"] = manager.state.ProfileID
+            health["agent_id"] = manager.state.AgentID
+            health["credential_expires_at"] = manager.state.ExpiresAt
+            health["credential_blocked_reason"] = manager.state.Blocked
+            health["credential_ready"] = credentialsReady && manager.state.Blocked == ""
+            health["credential_next_attempt"] = manager.state.NextAttempt
+        }
+        encoded, _ := json.MarshalIndent(health, "", "  ")
 		tmp := c.StateDir + "/status.json.tmp"
 		if e = os.WriteFile(tmp, encoded, 0600); e != nil {
 			return e

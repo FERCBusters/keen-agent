@@ -71,14 +71,8 @@ func send(c Config, sp *Spool, h *http.Client) error {
 	if len(events) == 0 {
 		return nil
 	}
-	token, e := readPrivate(c.TokenFile, 4096, true)
-	if e != nil {
-		return e
-	}
-	value := strings.TrimSpace(string(token))
-	if !strings.HasPrefix(value, "ka_") || strings.ContainsAny(value, "\r\n") {
-		return errors.New("invalid credential file")
-	}
+    value, e := credential(c)
+    if e != nil { return e }
 	payload := otlp(events)
 	for len(payload) > 900000 && len(events) > 1 {
 		events = events[:len(events)/2]
@@ -132,7 +126,7 @@ func send(c Config, sp *Spool, h *http.Client) error {
 }
 
 func heartbeat(c Config, h *http.Client, health map[string]any) error {
-	token, err := readPrivate(c.TokenFile, 4096, true)
+	token, err := credential(c)
 	if err != nil {
 		return err
 	}
@@ -146,7 +140,7 @@ func heartbeat(c Config, h *http.Client, health map[string]any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	req.Header.Set("Authorization", "Bearer "+token)
 	response, err := h.Do(req)
 	if err != nil {
 		return errors.New("health delivery failed")

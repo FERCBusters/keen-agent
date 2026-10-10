@@ -29,7 +29,13 @@ type Source struct {
 	Multiline                   string        `yaml:"multiline_start"`
 	include, exclude, multiline *regexp.Regexp
 }
+type EnrollmentConfig struct {
+    BootstrapKeyFile string `yaml:"bootstrap_key_file"`
+    Name string `yaml:"name"`
+}
+
 type Config struct {
+    Enrollment *EnrollmentConfig `yaml:"enrollment"`
 	Endpoint        string   `yaml:"endpoint"`
 	TokenFile       string   `yaml:"token_file"`
 	CAFile          string   `yaml:"ca_file"`
@@ -66,9 +72,17 @@ func config(path string) (Config, error) {
 	if !strings.HasSuffix(u.Path, "/v1/otlp/logs") {
 		return c, errors.New("endpoint path must end in /v1/otlp/logs")
 	}
-	if !filepath.IsAbs(c.StateDir) || !filepath.IsAbs(c.TokenFile) {
-		return c, errors.New("state_dir and token_file must be absolute")
-	}
+	if !filepath.IsAbs(c.StateDir) {
+        return c, errors.New("state_dir must be absolute")
+    }
+    if c.Enrollment == nil {
+        if !filepath.IsAbs(c.TokenFile) { return c, errors.New("token_file must be absolute") }
+    } else {
+        if c.TokenFile != "" { return c, errors.New("enrollment uses its private state directory; omit token_file") }
+        if !filepath.IsAbs(c.Enrollment.BootstrapKeyFile) { return c, errors.New("enrollment.bootstrap_key_file must be absolute") }
+        if c.Enrollment.Name == "" { c.Enrollment.Name, e = os.Hostname(); if e != nil { return c, errors.New("cannot determine enrollment hostname") } }
+        if !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$`).MatchString(c.Enrollment.Name) { return c, errors.New("invalid enrollment name") }
+    }
 	if c.QueueMB < 1 || c.QueueMB > 4096 || c.PollSeconds < 1 || c.PollSeconds > 300 || c.RetentionDays < 0 || c.RetentionDays > 365 {
 		return c, errors.New("invalid queue, polling or retention limit")
 	}

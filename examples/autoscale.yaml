@@ -1,0 +1,18 @@
+# Configure an enrollment profile in KEEN and fetch its bootstrap key from your
+# secret manager into this private file before starting the service.
+endpoint: https://keen.example.org/api/v1/otlp/logs
+enrollment:
+  bootstrap_key_file: /etc/keen-agent/bootstrap-key
+  # Optional: defaults to the machine hostname. Keep stable across restarts.
+  # name: web-prod-01
+# Enrollment credentials are managed atomically under state_dir. Omit token_file.
+# ca_file: /etc/keen-agent/organisation-ca.pem
+state_dir: /var/lib/keen-agent
+queue_mb: 256
+poll_seconds: 5
+retention_days: 0
+initial_lookback: 24h
+sources:
+  - name: system
+    kind: journal
+    parser: syslog

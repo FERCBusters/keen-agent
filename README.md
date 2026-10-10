@@ -1,4 +1,4 @@
-# KEEN Agent 0.1.5
+# KEEN Agent
 
 KEEN Agent is a standalone Linux Go service that collects selected host logs and sends OTLP/HTTP JSON to KEEN. It enriches records with patching, HTTP, PHP and Linux Audit context. KEEN stores the events and their redacted artifacts, then applies the existing framework mapping rules.
 
