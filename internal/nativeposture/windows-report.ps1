@@ -83,13 +83,76 @@ try {
     }
     if ($facts.Count -gt 0) { Add-Observation automatic_updates windows_mdm_update host $facts 'managed_update_policy_observed' }
 } catch { Add-Diagnostic automatic_updates windows_mdm_update }
+# Windows locks an idle session through any of three paths: the machine
+# inactivity limit, a password-protected screen saver, or sleep followed by
+# sign-in on wake. Each user observation combines them; automatic_lock_configured
+# is reported only when one path is confirmed, never inferred from absence.
+function Get-PositiveSeconds($Value) {
+    $n = 0L
+    if ($null -ne $Value -and [int64]::TryParse([string]$Value, [ref]$n) -and $n -gt 0 -and $n -lt 4294967295) { return $n }
+    return $null
+}
+$machineInactivity = $null
 try {
-    $system = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-    if ($null -ne $system.InactivityTimeoutSecs) {
-        Add-Observation screen_lock windows_machine_policy host @{
-            inactivity_seconds=$system.InactivityTimeoutSecs; automatic_lock_configured=($system.InactivityTimeoutSecs -gt 0)
-        } 'machine_inactivity_policy_observed'
+    $system = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue
+    if ($system -and $null -ne $system.InactivityTimeoutSecs) {
+        $machineInactivity = [string]$system.InactivityTimeoutSecs
+        # A zero limit disables this path only; another path may still lock.
+        if (Get-PositiveSeconds $machineInactivity) {
+            Add-Observation screen_lock windows_machine_policy host @{
+                inactivity_seconds=$machineInactivity; automatic_lock_configured=$true
+            } 'machine_inactivity_policy_observed'
+        }
     }
+} catch { Add-Diagnostic screen_lock windows_machine_policy }
+# Sleep capability comes from GetPwrCapabilities in the signed executable, which
+# prefixes $keenPowerCapabilities to this script; nothing is compiled here.
+# Then sign-in on wake (CONSOLELOCK) and sleep after (STANDBYIDLE) for the
+# active plan, where Group Policy values take precedence.
+$power = @{}
+if ($keenPowerCapabilities -is [hashtable]) {
+    foreach ($key in @('sleep_supported','modern_standby','batteries_present')) {
+        if ($keenPowerCapabilities[$key] -is [bool]) { $power[$key] = $keenPowerCapabilities[$key] }
+    }
+} else { Add-Diagnostic screen_lock windows_power_capabilities }
+try {
+    $planId = $null
+    $plans = @(Get-CimInstance -Namespace root/cimv2/power -ClassName Win32_PowerPlan | Where-Object { $_.IsActive })
+    if ($plans.Count -eq 1 -and ([string]$plans[0].InstanceID) -match '\\(\{[0-9a-fA-F-]{36}\})$') { $planId = $Matches[1] }
+    foreach ($setting in @(@('0e796bdb-100d-47d6-a2d5-f7d2daa51f51','wake_sign_in'),@('29f6c1db-86da-48c5-9fdb-f2b67b1f44da','sleep_after'))) {
+        $guid = $setting[0]
+        $policy = Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Power\PowerSettings\$guid" -ErrorAction SilentlyContinue
+        $indexes = @()
+        if ($planId) { $indexes = @(Get-CimInstance -Namespace root/cimv2/power -ClassName Win32_PowerSettingDataIndex -Filter "InstanceID LIKE '%$planId%$guid%'") }
+        foreach ($source in @('AC','DC')) {
+            $value = $null
+            if ($policy -and $null -ne $policy.($source + 'SettingIndex')) { $value = $policy.($source + 'SettingIndex') }
+            else {
+                $match = @($indexes | Where-Object { ([string]$_.InstanceID) -like "*$planId\$source\{$guid}" })
+                if ($match.Count -eq 1) { $value = $match[0].SettingIndexValue }
+            }
+            $n = 0L
+            if ($null -eq $value -or -not [int64]::TryParse([string]$value, [ref]$n) -or $n -lt 0) { continue }
+            if ($setting[1] -eq 'wake_sign_in') { $power['wake_sign_in_' + $source.ToLowerInvariant()] = ($n -ne 0) }
+            else { $power['sleep_after_' + $source.ToLowerInvariant() + '_seconds'] = [string]$n }
+        }
+    }
+} catch { Add-Diagnostic screen_lock windows_power_policy }
+# Sleep locks only on S1-S3 platforms where every power source in use requires
+# sign-in on wake. Modern Standby sign-in follows other settings, so it is not
+# confirmed here. The longest source timeout is the effective lock delay.
+$sleepLock = $null
+if ($power['sleep_supported'] -eq $true -and $power['modern_standby'] -eq $false -and $null -ne $power['batteries_present']) {
+    $sources = if ($power['batteries_present']) { @('ac','dc') } else { @('ac') }
+    $longest = 0L
+    foreach ($s in $sources) {
+        $after = Get-PositiveSeconds $power["sleep_after_$($s)_seconds"]
+        if ($power["wake_sign_in_$s"] -ne $true -or -not $after) { $longest = 0L; break }
+        if ($after -gt $longest) { $longest = $after }
+    }
+    if ($longest -gt 0) { $sleepLock = $longest }
+}
+try {
     # Loaded user hives only. Never load offline hives or inspect other user data.
     $hives = @(Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match '^(S-1-5-21-(\d+-){3}\d+|S-1-12-1-(\d+-){3}\d+)$' })
     foreach ($hive in $hives) {
@@ -97,16 +160,37 @@ try {
         $user = Get-ItemProperty "Registry::HKEY_USERS\$sid\Control Panel\Desktop" -ErrorAction SilentlyContinue
         $policy = Get-ItemProperty "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\Control Panel\Desktop" -ErrorAction SilentlyContinue
         $facts = @{}
-        foreach ($pair in @(@('ScreenSaveActive','saver_enabled'),@('ScreenSaverIsSecure','password_required'),@('ScreenSaveTimeOut','idle_seconds'))) {
+        foreach ($pair in @(@('ScreenSaveActive','saver_enabled'),@('ScreenSaverIsSecure','password_required'),@('ScreenSaveTimeOut','idle_seconds'),@('SCRNSAVE.EXE','screensaver_selected'))) {
             $value = $null
             if ($policy -and $null -ne $policy.($pair[0])) { $value = $policy.($pair[0]) }
             elseif ($user -and $null -ne $user.($pair[0])) { $value = $user.($pair[0]) }
-            if ($null -ne $value) {
+            if ($pair[0] -eq 'SCRNSAVE.EXE') {
+                # ScreenSaveActive is 1 by default; no screen saver runs unless one is selected.
+                # Only presence is reported, never the executable path.
+                if ($user -or $policy) { $facts[$pair[1]] = (-not [string]::IsNullOrWhiteSpace([string]$value)) }
+            }
+            elseif ($null -ne $value) {
                 if ($pair[0] -eq 'ScreenSaveTimeOut') { $facts[$pair[1]] = $value }
                 else { $facts[$pair[1]] = ([string]$value -eq '1') }
             }
         }
-        if ($facts.Count -gt 0) { Add-Observation screen_lock windows_user_policy $sid $facts 'user_screensaver_settings_observed' }
+        $paths = @()
+        if (Get-PositiveSeconds $machineInactivity) { $paths += ,@('machine_inactivity_policy', (Get-PositiveSeconds $machineInactivity)) }
+        $saverIdle = Get-PositiveSeconds $facts['idle_seconds']
+        if ($facts['saver_enabled'] -eq $true -and $facts['screensaver_selected'] -eq $true -and $facts['password_required'] -eq $true -and $saverIdle) {
+            $paths += ,@('secure_screen_saver', $saverIdle)
+        }
+        if ($sleepLock) { $paths += ,@('sleep_with_sign_in', $sleepLock) }
+        if ($facts.Count -eq 0 -and $paths.Count -eq 0) { continue }
+        if ($null -ne $machineInactivity) { $facts['machine_inactivity_seconds'] = $machineInactivity }
+        foreach ($key in $power.Keys) { $facts[$key] = $power[$key] }
+        if ($paths.Count -gt 0) {
+            $first = @($paths | Sort-Object { $_[1] })[0]
+            $facts['automatic_lock_configured'] = $true
+            $facts['lock_after_seconds'] = $first[1]
+            $facts['lock_paths'] = (@($paths | ForEach-Object { $_[0] }) -join ',')
+        }
+        Add-Observation screen_lock windows_user_policy $sid $facts 'user_lock_settings_observed'
     }
-} catch { Add-Diagnostic screen_lock windows_policy }
+} catch { Add-Diagnostic screen_lock windows_user_policy }
 ConvertTo-Json -InputObject @($items.ToArray()) -Depth 8 -Compress

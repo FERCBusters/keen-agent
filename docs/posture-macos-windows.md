@@ -12,7 +12,7 @@ file-tail or enrollment machinery.
 | Firewall | Application Firewall global state and PF enabled state separately | ActiveStore policy for Domain, Private and Public profiles; raw defaults preserved |
 | Malware | Apple XProtect package receipts/version, Defender health when installed | Defender service/realtime/signatures/scan dates, SecurityCenter registered third-party products |
 | Updates | Explicit managed or local software-update and App Store preferences, last successful check | Legacy WUA settings and successful check/install history, AU Group Policy, modern Update MDM values |
-| Screen lock | Console user screen-saver password/delay/idle preferences; machine managed preferences take precedence | Machine inactivity policy and loaded local/domain/Entra user hive screen-saver settings, per-user policy overrides preferences |
+| Screen lock | Console user screen-saver password/delay/idle preferences; machine managed preferences take precedence | One result per loaded local/domain/Entra user hive combining the machine inactivity limit, a password-protected selected screen saver (per-user policy overrides preferences) and sleep with sign-in on wake for the active power plan (power Group Policy overrides the plan) |
 
 These are observations, not a single compliance verdict. Examples: Windows
 BitLocker can be fully encrypted with protection suspended; registering an AV
@@ -31,7 +31,17 @@ resolve every precedence rule. Modern macOS declarative management and all
 per-user managed screensaver domains are not fully resolved. macOS examines the
 current console user; Windows examines loaded user hives (including disconnected
 sessions), not every account. Neither claims that an absent idle preference
-means there is no other lock mechanism. A device with no interactive session
+means there is no other lock mechanism. Windows reports
+`automatic_lock_configured=true` with `lock_after_seconds` and `lock_paths` when
+one path is confirmed, and otherwise omits it. `ScreenSaveActive` is 1 in a
+default profile with no screen saver selected, so `screensaver_selected` is
+reported separately and the executable path is never reported. Sleep is
+confirmed only on S1-S3 platforms where every power source in use (mains, and
+battery when batteries are present) requires sign-in on wake and sleeps after a
+finite timeout; the longest timeout applies. Modern Standby sign-in, Dynamic
+Lock and MDM device-lock policy are not resolved. Sleep capability comes from
+`GetPwrCapabilities`, called by the executable through `powrprof.dll` from the
+system directory; the script compiles no code. A device with no interactive session
 may produce no user screen-lock observation.
 
 ## Build and generate reports

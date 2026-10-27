@@ -174,3 +174,19 @@ func TestQueuePartialAckAndRetry(t *testing.T) {
 		return nil
 	})
 }
+
+func TestPowerCapabilitiesPrelude(t *testing.T) {
+	caps := make([]byte, powerCapsSize)
+	if got := powerCapabilitiesPrelude(caps[:powerCapsSize-1]); got != "" {
+		t.Fatal("short structure accepted", got)
+	}
+	want := "$keenPowerCapabilities = @{ sleep_supported=$false; modern_standby=$false; batteries_present=$false }\n"
+	if got := powerCapabilitiesPrelude(caps); got != want {
+		t.Fatal(got)
+	}
+	caps[5], caps[20], caps[30] = 1, 7, 1
+	want = "$keenPowerCapabilities = @{ sleep_supported=$true; modern_standby=$true; batteries_present=$true }\n"
+	if got := powerCapabilitiesPrelude(caps); got != want {
+		t.Fatal(got)
+	}
+}

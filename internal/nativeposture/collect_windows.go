@@ -8,10 +8,29 @@ import (
 	"golang.org/x/sys/windows"
 	"path/filepath"
 	"unicode/utf16"
+	"unsafe"
 )
 
 //go:embed windows-report.ps1
 var windowsReport string
+
+// powrprof.dll is loaded from System32 only.
+var getPwrCapabilities = windows.NewLazySystemDLL("powrprof.dll").NewProc("GetPwrCapabilities")
+
+// powerCapabilities reads SYSTEM_POWER_CAPABILITIES (76 bytes) directly, so the
+// script never compiles code to make the call. It returns a fixed PowerShell
+// assignment of three booleans, or nothing when the query is unavailable.
+func powerCapabilities() string {
+	if getPwrCapabilities.Find() != nil {
+		return ""
+	}
+	var caps [128]byte
+	ok, _, _ := getPwrCapabilities.Call(uintptr(unsafe.Pointer(&caps[0])))
+	if byte(ok) == 0 {
+		return ""
+	}
+	return powerCapabilitiesPrelude(caps[:])
+}
 
 func Collect(ctx context.Context, r Runner) ([]Observation, error) {
 	// Embed the fixed read-only script in the signed executable. No script file,
@@ -20,7 +39,7 @@ func Collect(ctx context.Context, r Runner) ([]Observation, error) {
 	if e != nil {
 		return nil, e
 	}
-	words := utf16.Encode([]rune(windowsReport))
+	words := utf16.Encode([]rune(powerCapabilities() + windowsReport))
 	b := make([]byte, len(words)*2)
 	for i, w := range words {
 		binary.LittleEndian.PutUint16(b[i*2:], w)
