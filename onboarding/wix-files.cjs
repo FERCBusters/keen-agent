@@ -28,7 +28,7 @@ function walk(dir, rel = "") {
       refs.push(`<ComponentRef Id="${component}"/>`);
       const shortcut =
         rel === "" && entry.name === "keen-setup.exe"
-          ? '<Shortcut Id="SetupShortcut" Directory="ProgramMenuFolder" Name="KEEN Setup" Advertise="yes"/>'
+          ? '<Shortcut Id="SetupShortcut" Directory="ProgramMenuFolder" Name="KEEN Setup" Advertise="yes" Icon="KeenSetup.exe" IconIndex="0"/>'
           : "";
       return `<Component Id="${component}" Guid="*"><File Id="${id("F", key)}" Source="${esc(full)}" Name="${esc(entry.name)}" KeyPath="yes">${shortcut}</File></Component>`;
     })
@@ -37,5 +37,5 @@ function walk(dir, rel = "") {
 const body = walk(root);
 fs.writeFileSync(
   output,
-  `<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"><Fragment><DirectoryRef Id="SETUPFOLDER">${body}</DirectoryRef><ComponentGroup Id="SetupUI">${refs.join("")}</ComponentGroup></Fragment></Wix>`,
+  `<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"><Fragment><Icon Id="KeenSetup.exe" SourceFile="${esc(path.resolve(__dirname, "../dist/setup-icons/keen.ico"))}"/><DirectoryRef Id="SETUPFOLDER">${body}</DirectoryRef><ComponentGroup Id="SetupUI">${refs.join("")}</ComponentGroup></Fragment></Wix>`,
 );
