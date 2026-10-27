@@ -1,11 +1,14 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="KEEN Posture" Manufacturer="KEEN" Version="0.1.7" UpgradeCode="F21B7567-68BB-494F-A48F-1F25FE79FE03" Scope="perMachine">
+  <Package Name="KEEN Posture" Manufacturer="KEEN" Version="0.1.9" UpgradeCode="F21B7567-68BB-494F-A48F-1F25FE79FE03" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer KEEN Posture version is installed." />
     <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramMenuFolder" />
     <StandardDirectory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="KEEN Posture">
+      <Directory Id="SETUPFOLDER" Name="Setup" />
+      <Component Id="SetupHelper" Guid="*"><File Source="$(var.SetupHelper)" Name="keen-setup-helper.exe" KeyPath="yes" /></Component>
       <Component Id="Collector" Guid="*">
         <File Id="CollectorExe" Source="$(var.Binary)" Name="keen-posture.exe" KeyPath="yes" />
-        <ServiceInstall Id="CollectorService" Name="KeenPosture" DisplayName="KEEN Posture" Description="Collects workstation posture for KEEN" Type="ownProcess" Start="demand" ErrorControl="normal" Account="LocalSystem" Arguments="-command service -config &quot;[POSTUREDATA]config.json&quot;" />
+        <ServiceInstall Id="CollectorService" Name="KeenPosture" DisplayName="KEEN Posture" Description="Collects workstation posture for KEEN" Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="-command service -config &quot;[POSTUREDATA]config.json&quot;" />
         <ServiceControl Id="CollectorControl" Name="KeenPosture" Stop="both" Remove="uninstall" Wait="yes" />
       </Component>
     </Directory></StandardDirectory>
@@ -14,6 +17,6 @@
         <CreateFolder><PermissionEx Sddl="O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" /></CreateFolder>
       </Component>
     </Directory></Directory></StandardDirectory>
-    <Feature Id="Main" Title="KEEN Posture" Level="1"><ComponentRef Id="Collector" /><ComponentRef Id="PrivateData" /></Feature>
+    <Feature Id="Main" Title="KEEN Posture" Level="1"><ComponentRef Id="Collector" /><ComponentRef Id="PrivateData" /><ComponentRef Id="SetupHelper" /><ComponentGroupRef Id="SetupUI" /></Feature>
   </Package>
 </Wix>

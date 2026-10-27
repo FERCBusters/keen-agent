@@ -12,3 +12,10 @@ updates:
     commit-message:
       prefix: 'build'
       include: 'scope'
+  - package-ecosystem: 'npm'
+    directory: '/onboarding'
+    schedule:
+      interval: 'weekly'
+    commit-message:
+      prefix: 'build'
+      include: 'scope'

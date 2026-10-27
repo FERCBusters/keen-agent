@@ -2,6 +2,18 @@
 
 KEEN Agent is a standalone Linux Go service that collects selected host logs and sends OTLP/HTTP JSON to KEEN. It enriches records with patching, HTTP, PHP and Linux Audit context. KEEN stores the events and their redacted artifacts, then applies the existing framework mapping rules.
 
+## Workstation setup app
+
+The optional **KEEN Setup** app connects a Linux, macOS or Windows workstation
+using its KEEN instance domain and individual device token. It saves protected
+credentials, starts the posture service and configures boot startup. Host and
+desktop posture checks run hourly by default. The Electron setup app can be
+closed after onboarding; it does not run in the background with the collector.
+
+See [workstation setup, packaging and signing](docs/workstation-setup.md).
+Linux workstation onboarding uses a separate posture-only sender configuration,
+leaving an existing server/log collection configuration intact.
+
 ## How to install KEEN Agent
 
 ### APT repository

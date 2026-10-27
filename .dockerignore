@@ -1,2 +1,5 @@
-dist
 .git
+onboarding/node_modules
+dist/*
+!dist/setup-app/
+!dist/setup-app/**

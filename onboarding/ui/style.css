@@ -1,0 +1,151 @@
+:root {
+  color-scheme: light dark;
+  font:
+    15px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  background: #f1f6fc;
+  color: #1f1f2a;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+main {
+  max-width: 620px;
+  margin: auto;
+  padding: 32px 40px;
+}
+.brand {
+  font-weight: 800;
+  font-size: 23px;
+  letter-spacing: 1px;
+  color: #004987;
+}
+.brand span {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  margin-left: 10px;
+  color: #5e5e75;
+}
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  margin: 32px 0 8px;
+  color: #5e5e75;
+}
+h1 {
+  font-size: 28px;
+  line-height: 1.2;
+  margin: 0 0 12px;
+}
+.intro {
+  line-height: 1.6;
+  color: #5e5e75;
+  margin: 0 0 24px;
+}
+label {
+  display: block;
+  font-weight: 600;
+  margin: 18px 0 7px;
+}
+input {
+  width: 100%;
+  font: inherit;
+  border: 1px solid #b7c9dc;
+  border-radius: 9px;
+  padding: 12px;
+  background: #fff;
+  color: #1f1f2a;
+}
+input:focus-visible,
+button:focus-visible {
+  outline: 3px solid #65a5db;
+  outline-offset: 2px;
+}
+.hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #5e5e75;
+  margin: 6px 0;
+}
+.notice {
+  margin: 22px 0;
+  padding: 15px;
+  border: 1px solid #c1d4e8;
+  border-radius: 12px;
+  background: #e4eef9;
+  font-size: 13px;
+}
+.notice p {
+  line-height: 1.5;
+  margin: 5px 0 0;
+}
+button {
+  font: inherit;
+  font-weight: 600;
+  border: 0;
+  border-radius: 9px;
+  padding: 12px 20px;
+  background: #004987;
+  color: white;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+#status {
+  margin-top: 18px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.error {
+  color: #a52b28;
+}
+.success {
+  color: #14633d;
+}
+footer {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #5e5e75;
+  margin-top: 26px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    background: #141820;
+    color: #edf0f6;
+  }
+  .brand {
+    color: #8cc8fa;
+  }
+  .brand span,
+  .hint,
+  .intro,
+  .eyebrow,
+  footer {
+    color: #b4bdc9;
+  }
+  input {
+    background: #202631;
+    color: #edf0f6;
+    border-color: #58687a;
+  }
+  .notice {
+    background: #202d3b;
+    border-color: #465061;
+  }
+  .error {
+    color: #ffaaa5;
+  }
+  .success {
+    color: #87d5ab;
+  }
+}

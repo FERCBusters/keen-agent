@@ -1,10 +1,10 @@
 [Unit]
-Description=Collect KEEN desktop security posture every fifteen minutes
+Description=Collect KEEN desktop security posture hourly
 PartOf=graphical-session.target
 
 [Timer]
 OnActiveSec=30s
-OnUnitActiveSec=15min
+OnUnitActiveSec=1h
 RandomizedDelaySec=30s
 AccuracySec=30s
 

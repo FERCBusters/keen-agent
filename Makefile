@@ -2,6 +2,7 @@ GO ?= go
 .PHONY: build test release clean
 build:
 	CGO_ENABLED=0 $(GO) build -buildvcs=false -trimpath -ldflags='-s -w' -o dist/keen-agent ./cmd/keen-agent
+	CGO_ENABLED=0 $(GO) build -buildvcs=false -trimpath -o dist/keen-setup-helper ./cmd/keen-setup-helper
 
 test:
 	$(GO) test -race ./...

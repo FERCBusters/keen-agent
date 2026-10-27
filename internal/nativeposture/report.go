@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const Version = "0.1.7"
+const Version = "0.1.9"
 
 type Observation = model.Observation
 type Report struct {

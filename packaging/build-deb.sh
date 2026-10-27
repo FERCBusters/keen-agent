@@ -11,6 +11,16 @@ case "$ID:$VERSION_ID" in
 esac
 arch=$(dpkg --print-architecture)
 root=$(mktemp -d)
+install -D -m 0755 dist/keen-setup-helper "$root/usr/libexec/keen-setup-helper"
+install -D -m 0644 packaging/keen-workstation.service "$root/lib/systemd/system/keen-workstation.service"
+setup_dep=''
+if [ -d dist/setup-app ]; then
+ install -d "$root/opt/keen-setup"
+ cp -a dist/setup-app/. "$root/opt/keen-setup/"
+ chmod 4755 "$root/opt/keen-setup/chrome-sandbox"
+ install -D -m 0644 packaging/keen-setup.desktop "$root/usr/share/applications/keen-setup.desktop"
+ setup_dep=', polkitd, pkexec, libgtk-3-0t64 | libgtk-3-0, libnss3, libasound2t64 | libasound2, libgbm1, libxss1, libatk-bridge2.0-0t64 | libatk-bridge2.0-0'
+fi
 install -D -m 0755 dist/keen-agent "$root/usr/bin/keen-agent"
 install -D -m 0640 examples/config.yaml "$root/etc/keen-agent/config.yaml"
 install -D -m 0644 packaging/keen-agent.service "$root/lib/systemd/system/keen-agent.service"
@@ -30,10 +40,10 @@ cp LICENSE NOTICE README.md "$root/usr/share/doc/keen-agent/"
 cp -r licenses "$root/usr/share/doc/keen-agent/"
 cat > "$root/DEBIAN/control" <<EOF
 Package: keen-agent
-Version: 0.1.7-1+${revision}
+Version: 0.1.9-1+${revision}
 Architecture: $arch
 Maintainer: KEEN maintainers <mig5@mig5.net>
-Depends: ca-certificates, passwd, systemd
+Depends: ca-certificates, passwd, systemd${setup_dep}
 Section: admin
 Priority: optional
 Description: KEEN evidence log collection agent
@@ -45,7 +55,7 @@ cat > "$root/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -eu
 if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
- systemctl disable --now keen-agent.service keen-posture-host.timer keen-posture-host.service || true
+ systemctl disable --now keen-workstation.service keen-agent.service keen-posture-host.timer keen-posture-host.service || true
 fi
 EOF
 cat > "$root/DEBIAN/postrm" <<'EOF'
@@ -56,4 +66,4 @@ if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
 EOF
 chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/prerm" "$root/DEBIAN/postrm"
 mkdir -p /out
-dpkg-deb --root-owner-group --build "$root" "/out/keen-agent_0.1.7-1+${revision}_${arch}.deb"
+dpkg-deb --root-owner-group --build "$root" "/out/keen-agent_0.1.9-1+${revision}_${arch}.deb"

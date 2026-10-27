@@ -3,3 +3,5 @@
 *.db.lock
 status.json
 release.sh
+
+/onboarding/node_modules/

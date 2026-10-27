@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KEEN Setup
+Comment=Connect this workstation to KEEN
+Exec=/opt/keen-setup/keen-setup
+Icon=/opt/keen-setup/keen.png
+Terminal=false
+Categories=Settings;Security;

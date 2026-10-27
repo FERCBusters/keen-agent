@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "0.1.7"
+const version = "0.1.9"
 
 func main() {
 	if err := run(); err != nil {

@@ -111,3 +111,27 @@ func trustedParentACL(path string) error {
 	}
 	return nil
 }
+
+// CheckTrustedAncestors rejects replaceable or redirected installation paths.
+// Used by the administrator-only setup helper before creating private children.
+func CheckTrustedAncestors(path string) error {
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		u, e := windows.UTF16PtrFromString(p)
+		if e != nil {
+			return e
+		}
+		a, e := windows.GetFileAttributes(u)
+		if e != nil {
+			return e
+		}
+		if a&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return errors.New("reparse point")
+		}
+		if e = trustedParentACL(p); e != nil {
+			return e
+		}
+		if p == filepath.Dir(p) {
+			return nil
+		}
+	}
+}

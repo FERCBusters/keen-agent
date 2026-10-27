@@ -48,7 +48,7 @@ On distributions that compress documentation, use the source package's
 the timer; it does not run a shell or pass desktop environment variables into a
 privileged process. It is NOT installed globally or enabled automatically.
 
-Host checks run hourly; desktop checks every 15 minutes. Timers include jitter.
+Host and desktop checks run hourly. Timers include jitter.
 The session collector returns an unknown result for multiple graphical sessions
 owned by the same UID because a shared user bus cannot reliably attribute the
 settings to an individual session. Different users are reported separately.

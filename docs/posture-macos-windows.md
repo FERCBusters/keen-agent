@@ -62,6 +62,14 @@ history, full registry export or full system profiler dump is collected.
 Review reports before sharing them. They are the intended input for refining
 coverage on real macOS/Windows installations.
 
+## Workstation setup
+
+The installers include **KEEN Setup**. Open it after installation to enter the
+instance domain and an individual workstation token. It verifies the token over
+HTTPS, writes the protected configuration, enables boot startup and starts the
+collector. See [setup and signing](workstation-setup.md). Manual provisioning
+below remains available for administrators.
+
 ## Delivery
 
 `-command once -config ABSOLUTE_PATH` collects, queues and delivers; `run` repeats
@@ -85,7 +93,7 @@ stable on retries. A whole report is acknowledged only on HTTP 200 with a JSON
 object and no reported partial failure. Partial rejection retains the report;
 correct the receiver/configuration before retrying. Delivery is at least once;
 KEEN should deduplicate IDs. Retries occur at the scheduled interval (no tight
-retry loop). A collection/delivery pass has a five-minute deadline. No heartbeat,
+retry loop). A collection/delivery pass has a five-minute deadline. No periodic heartbeat,
 automatic enrollment, token refresh, custom CA option or queue repair CLI is
 implemented in this companion yet.
 
@@ -104,7 +112,7 @@ Create the named notarytool keychain profile beforehand using Apple's supported
 credential flow. The script builds a universal Intel/Apple Silicon executable,
 signs with hardened runtime/timestamp, packages, signs the PKG, submits and checks
 notarization, staples, then verifies the package. No Apple password is embedded
-in source or passed by this script. Output: `dist/macos/keen-posture-0.1.8.pkg`.
+in source or passed by this script. Output: `dist/macos/keen-posture-0.1.9.pkg`.
 
 The installer creates `/Library/Application Support/KEEN/Posture` and its state
 directory, installs `/usr/local/libexec/keen-posture` and the launch daemon, and
@@ -145,7 +153,7 @@ digests use SHA-256. `-Unsigned` explicitly produces development artifacts.
 availability on your ARM installation. Keep MSI product architecture consistent
 for an upgrade; do not install both architectures on one machine.
 
-Install the MSI elevated. It creates a demand-start LocalSystem service and a
+Install the MSI elevated. It creates a automatic-start LocalSystem service and a
 private ProgramData directory; it does not start unconfigured collection. Then:
 
 ```
