@@ -37,6 +37,7 @@ const path = require("node:path"),
     ],
     afterCopy: [
       async ({ buildPath }) => {
+        await fs.copyFile(icon + ".png", path.join(buildPath, "icon.png"));
         const p = path.join(buildPath, "package.json");
         const j = JSON.parse(await fs.readFile(p));
         delete j.devDependencies;

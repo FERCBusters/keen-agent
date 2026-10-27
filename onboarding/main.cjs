@@ -136,6 +136,7 @@ else {
       minWidth: 520,
       minHeight: 600,
       title: "KEEN Setup",
+      icon: path.join(__dirname, "icon.png"),
       autoHideMenuBar: true,
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),

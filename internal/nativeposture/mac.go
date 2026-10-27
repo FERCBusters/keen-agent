@@ -125,8 +125,20 @@ func CollectMac(ctx context.Context, r Runner) []Observation {
 	if e == nil {
 		n, err := strconv.ParseUint(uid, 10, 32)
 		if err == nil && n >= 500 {
-			f := map[string]string{"subject_uid": uid}
+			f := map[string]string{}
+			reason := "user_preferences_observed"
+			// Enter the GUI bootstrap session and drop root identity. sysadminctl
+			// reads the console user's lock configuration, not root's preferences.
+			if v, err := query(ctx, r, "/bin/launchctl", macScreenLockArgs(uid)...); err == nil {
+				if lock := parseMacScreenLock(v); lock != nil {
+					f = lock
+					reason = "sysadminctl_screen_lock_observed"
+				}
+			}
 			for _, q := range []struct{ key, fact string }{{"askForPassword", "password_required"}, {"askForPasswordDelay", "password_delay_seconds"}, {"idleTime", "idle_seconds"}} {
+				if _, present := f[q.fact]; present || (reason == "sysadminctl_screen_lock_observed" && q.key == "askForPasswordDelay") {
+					continue // Do not mix stale legacy password settings with live status.
+				}
 				v, err := query(ctx, r, "/usr/bin/defaults", "read", "/Library/Managed Preferences/com.apple.screensaver", q.key)
 				if err != nil {
 					v, err = query(ctx, r, "/usr/bin/sudo", "-n", "-H", "-u", "#"+uid, "--", "/usr/bin/defaults", "-currentHost", "read", "com.apple.screensaver", q.key)
@@ -145,9 +157,8 @@ func CollectMac(ctx context.Context, r Runner) []Observation {
 					}
 				}
 			}
-			delete(f, "subject_uid") // scope carries identity; reserved provenance field is not supplied as a fact.
 			if len(f) > 0 {
-				out = append(out, observed("screen_lock", "macos_screensaver", "uid:"+uid, "user_preferences_observed", f))
+				out = append(out, observed("screen_lock", "macos_screensaver", "uid:"+uid, reason, f))
 			} else {
 				out = append(out, unavailable("screen_lock", "macos_screensaver"))
 			}
@@ -163,4 +174,56 @@ func plistJSON(ctx context.Context, r Runner, b []byte) (map[string]any, error) 
 	var m map[string]any
 	e = json.Unmarshal(out, &m)
 	return m, e
+}
+
+// Only this fixed, read-only command may include stderr in its parsed result:
+// sysadminctl emits its normal status through NSLog (stderr).
+func macScreenLockArgs(uid string) []string {
+	return []string{"asuser", uid, "/usr/bin/sudo", "-n", "-H", "-u", "#" + uid, "--", "/usr/sbin/sysadminctl", "-screenLock", "status"}
+}
+func isMacScreenLockQuery(path string, args []string) bool {
+	if path != "/bin/launchctl" || len(args) != 11 {
+		return false
+	}
+	n, err := strconv.ParseUint(args[1], 10, 32)
+	if err != nil || n < 500 {
+		return false
+	}
+	expected := macScreenLockArgs(args[1])
+	for i := range expected {
+		if expected[i] != args[i] {
+			return false
+		}
+	}
+	return true
+}
+
+var macScreenLockLine = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.+ -]+ sysadminctl\[[0-9]+:[0-9]+\] )?screenLock (?:delay is (immediate|[0-9]+ seconds)|is (off|disabled))$`)
+
+func parseMacScreenLock(raw string) map[string]string {
+	var result map[string]string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "screenLock") {
+			continue
+		}
+		m := macScreenLockLine.FindStringSubmatch(line)
+		if m == nil || result != nil {
+			return nil
+		} // Ambiguous or unfamiliar output is unknown.
+		if m[2] != "" {
+			result = map[string]string{"password_required": "false"}
+			continue
+		}
+		seconds := uint64(0)
+		if m[1] != "immediate" {
+			n, err := strconv.ParseUint(strings.TrimSuffix(m[1], " seconds"), 10, 32)
+			if err != nil || n > 2147483647 {
+				return nil
+			} // Reject overflow/sentinel values.
+			seconds = n
+		}
+		result = map[string]string{"password_required": "true", "password_delay_seconds": strconv.FormatUint(seconds, 10)}
+	}
+	return result
 }

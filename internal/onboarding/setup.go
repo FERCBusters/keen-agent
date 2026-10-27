@@ -77,7 +77,7 @@ func client() *http.Client {
 func verify(ctx context.Context, h *http.Client, r Request) error {
 	// A heartbeat verifies the individual credential without creating artificial evidence.
 	target := strings.TrimSuffix(r.URL, "/v1/otlp/logs") + "/v1/agents/heartbeat"
-	req, e := http.NewRequestWithContext(ctx, "POST", target, strings.NewReader(`{"version":"0.1.9"}`))
+	req, e := http.NewRequestWithContext(ctx, "POST", target, strings.NewReader(`{"version":"0.1.10"}`))
 	if e != nil {
 		return errors.New("connection failed")
 	}

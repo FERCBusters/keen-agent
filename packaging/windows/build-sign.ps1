@@ -29,7 +29,7 @@ try {
   $out=Join-Path $repo "dist\windows-$Architecture"
   New-Item -ItemType Directory -Force $out | Out-Null
   $exe=Join-Path $out 'keen-posture.exe'
-  $msi=Join-Path $out 'keen-posture-0.1.9.msi'
+  $msi=Join-Path $out 'keen-posture-0.1.10.msi'
   $env:GOOS='windows'; $env:GOARCH=$Architecture; $env:CGO_ENABLED='0'
   Checked 'go' @('build','-trimpath','-o',$exe,'./cmd/keen-posture')
   Sign $exe

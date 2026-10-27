@@ -112,7 +112,7 @@ Create the named notarytool keychain profile beforehand using Apple's supported
 credential flow. The script builds a universal Intel/Apple Silicon executable,
 signs with hardened runtime/timestamp, packages, signs the PKG, submits and checks
 notarization, staples, then verifies the package. No Apple password is embedded
-in source or passed by this script. Output: `dist/macos/keen-posture-0.1.9.pkg`.
+in source or passed by this script. Output: `dist/macos/keen-posture-0.1.10.pkg`.
 
 The installer creates `/Library/Application Support/KEEN/Posture` and its state
 directory, installs `/usr/local/libexec/keen-posture` and the launch daemon, and

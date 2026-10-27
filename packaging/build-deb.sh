@@ -40,7 +40,7 @@ cp LICENSE NOTICE README.md "$root/usr/share/doc/keen-agent/"
 cp -r licenses "$root/usr/share/doc/keen-agent/"
 cat > "$root/DEBIAN/control" <<EOF
 Package: keen-agent
-Version: 0.1.9-1+${revision}
+Version: 0.1.10-1+${revision}
 Architecture: $arch
 Maintainer: KEEN maintainers <mig5@mig5.net>
 Depends: ca-certificates, passwd, systemd${setup_dep}
@@ -66,4 +66,4 @@ if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
 EOF
 chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/prerm" "$root/DEBIAN/postrm"
 mkdir -p /out
-dpkg-deb --root-owner-group --build "$root" "/out/keen-agent_0.1.9-1+${revision}_${arch}.deb"
+dpkg-deb --root-owner-group --build "$root" "/out/keen-agent_0.1.10-1+${revision}_${arch}.deb"

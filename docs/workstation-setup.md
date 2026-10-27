@@ -70,7 +70,7 @@ export NOTARY_PROFILE='keen-notary'
 This builds universal Intel/Apple Silicon Go binaries and the Electron app,
 signs the app's nested components with hardened runtime, signs the Go helper and
 collector, builds and signs the PKG, notarises it and staples the result.
-Output: dist/macos/keen-posture-0.1.9.pkg. The application is installed at
+Output: dist/macos/keen-posture-0.1.10.pkg. The application is installed at
 /Applications/KEEN Setup.app. Credentials remain root-only under
 /Library/Application Support/KEEN/Posture. launchd starts collection at boot
 and schedules it hourly.
@@ -81,7 +81,7 @@ For development before acquiring certificates:
 UNSIGNED=1 ./packaging/macos/build-sign-notarize.sh
 ```
 
-This creates keen-posture-0.1.9-unsigned.pkg with local ad-hoc application/binary
+This creates keen-posture-0.1.10-unsigned.pkg with local ad-hoc application/binary
 signatures, without notarisation or a trusted installer signature. Test on a Mac
 where you deliberately approve your own development build using the OS's normal
 application approval controls. HTTPS certificate verification remains enabled.
@@ -103,6 +103,25 @@ the Go collector/setup helper, generates explicit WiX file components, builds
 the MSI, signs it and verifies the signatures. SHA-256 signature and timestamp
 digests are retained. Use -Architecture arm64 for an ARM64 Windows build. Test
 on each architecture you distribute.
+
+If PowerShell reports “running scripts is disabled”, allow locally created and
+unblocked scripts for this PowerShell window only (no machine-wide change):
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+```
+
+For a downloaded copy, review the build script and then unblock that file:
+
+```powershell
+Unblock-File .\packaging\windows\build-sign.ps1
+```
+
+The Process policy expires when this PowerShell window closes. Organisation
+Group Policy may override it; inspect `Get-ExecutionPolicy -List` and ask your
+administrator if MachinePolicy/UserPolicy controls execution. The build's
+`-Unsigned` switch skips application/installer signing; it does not alter
+PowerShell execution policy.
 
 For certificate-free development builds:
 
@@ -167,3 +186,22 @@ credentials and queued data are retained for deliberate administrator cleanup.
 On macOS stop/unload system/net.keen.posture before removing its plist and binaries.
 On Linux also disable the current user's keen-posture-session.timer and remove
 ~/.config/autostart/keen-posture-session.desktop if no longer collecting posture.
+
+### macOS screen-lock detection
+
+The collector queries `sysadminctl -screenLock status` inside the active console
+user's launchd session, with that user's identity. Normal status on stderr is
+captured only for this fixed read-only query; raw command output is not uploaded.
+A recognised result supplies `password_required` and `password_delay_seconds`.
+For example, `screenLock delay is 300 seconds` means password protection is
+configured with a five-minute grace period after screen saver/display sleep.
+This is separate from `idle_seconds`, and does not itself establish an inactivity
+timeout or a policy pass/fail. Legacy managed/ByHost/user preferences remain the
+fallback when the status query fails or its output is not recognised. No user's
+password is requested and no screen-lock setting is changed.
+
+The packaged setup app uses the supplied KEEN mitigator artwork for macOS ICNS,
+Windows ICO and Linux PNG icons. The 64-pixel source is scaled to 256 pixels for
+packaging, so large Dock/Explorer icons will have the source image's resolution
+limits. Rebuild/reinstall the native package to update both collector and icon;
+no token re-entry is required for an already configured installation.

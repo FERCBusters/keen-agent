@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const Version = "0.1.9"
+const Version = "0.1.10"
 
 type Observation = model.Observation
 type Report struct {
@@ -51,6 +51,9 @@ func (LocalRunner) Run(ctx context.Context, path string, args []string, input []
 	var out bounded
 	c.Stdout = &out
 	c.Stderr = io.Discard
+	if isMacScreenLockQuery(path, args) {
+		c.Stderr = &out // Same bounded writer; raw output is never evidence.
+	}
 	c.WaitDelay = time.Second
 	if err := c.Run(); err != nil {
 		return nil, errors.New("native query failed")

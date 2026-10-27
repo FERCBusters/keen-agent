@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="KEEN Posture" Manufacturer="KEEN" Version="0.1.9" UpgradeCode="F21B7567-68BB-494F-A48F-1F25FE79FE03" Scope="perMachine">
+  <Package Name="KEEN Posture" Manufacturer="KEEN" Version="0.1.10" UpgradeCode="F21B7567-68BB-494F-A48F-1F25FE79FE03" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer KEEN Posture version is installed." />
     <MediaTemplate EmbedCab="yes" />
     <StandardDirectory Id="ProgramMenuFolder" />
