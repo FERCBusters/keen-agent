@@ -1,0 +1,19 @@
+[Unit]
+Description=KEEN read-only desktop security posture observation
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/keen-agent -command posture-session
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=keen-posture-session
+TimeoutStartSec=120
+UMask=0077
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=96M
+TasksMax=16

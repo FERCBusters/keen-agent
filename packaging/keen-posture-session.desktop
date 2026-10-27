@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KEEN desktop posture collector
+Comment=Start the optional read-only KEEN desktop posture timer
+Exec=/usr/bin/systemctl --user start keen-posture-session.timer
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

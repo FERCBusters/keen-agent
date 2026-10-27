@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "0.1.6"
+const version = "0.1.7"
 
 func main() {
 	if err := run(); err != nil {
@@ -24,9 +24,13 @@ func main() {
 }
 func run() error {
 	path := flag.String("config", "/etc/keen-agent/config.yaml", "configuration file")
-	command := flag.String("command", "run", "run, check, status, retry-credentials, purge-queue or version")
+	command := flag.String("command", "run", "run, check, status, retry-credentials, purge-queue, posture-host, posture-session or version")
 	confirmPurge := flag.Bool("confirm-discard", false, "confirm permanent deletion of queued, undelivered events")
+	diagnostics := flag.Bool("posture-diagnostics", false, "include unavailable providers in posture preview")
 	flag.Parse()
+	if *command == "posture-host" || *command == "posture-session" {
+		return runPosture(*command, *diagnostics)
+	}
 	if *command == "version" {
 		fmt.Println(version)
 		return nil

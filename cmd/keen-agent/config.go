@@ -113,9 +113,12 @@ func config(path string) (Config, error) {
 			return c, errors.New("source kind must be file or journal")
 		}
 		switch s.Parser {
-		case "raw", "json", "syslog", "nginx", "php", "dpkg", "apt", "dnf", "auditd", "ossec":
+		case "raw", "json", "syslog", "nginx", "php", "dpkg", "apt", "dnf", "auditd", "ossec", "posture":
 		default:
 			return c, fmt.Errorf("unknown parser for %s", s.Name)
+		}
+		if s.Parser == "posture" && (s.Kind != "journal" || len(s.Units) != 0 || len(s.Paths) != 0) {
+			return c, errors.New("posture requires kind journal and no units/paths; trusted collector units are selected automatically")
 		}
 		if s.Kind == "file" && (len(s.Paths) == 0 || len(s.Paths) > 16) {
 			return c, errors.New("file source requires 1 to 16 paths")

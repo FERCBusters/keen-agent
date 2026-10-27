@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect KEEN host security posture hourly
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -1,10 +1,13 @@
 #!/bin/sh
 set -eu
 . /etc/os-release
-case "$VERSION_ID" in
- 12) suite=bookworm ;;
- 13) suite=trixie ;;
- *) echo "Unsupported Debian release: $VERSION_ID" >&2; exit 1 ;;
+case "$ID:$VERSION_ID" in
+ debian:12) suite=bookworm; revision="deb12u1.bookworm" ;;
+ debian:13) suite=trixie; revision="deb13u1.trixie" ;;
+ ubuntu:22.04) suite=jammy; revision="ubuntu22.04.jammy" ;;
+ ubuntu:24.04) suite=noble; revision="ubuntu24.04.noble" ;;
+ ubuntu:26.04) suite=resolute; revision="ubuntu26.04.resolute" ;;
+ *) echo "Unsupported distribution/release: $ID $VERSION_ID" >&2; exit 1 ;;
 esac
 arch=$(dpkg --print-architecture)
 root=$(mktemp -d)
@@ -12,12 +15,22 @@ install -D -m 0755 dist/keen-agent "$root/usr/bin/keen-agent"
 install -D -m 0640 examples/config.yaml "$root/etc/keen-agent/config.yaml"
 install -D -m 0644 packaging/keen-agent.service "$root/lib/systemd/system/keen-agent.service"
 sed -i 's|/usr/local/bin/keen-agent|/usr/bin/keen-agent|' "$root/lib/systemd/system/keen-agent.service"
+for unit in keen-posture-host.service keen-posture-host.timer; do
+ install -D -m 0644 "packaging/$unit" "$root/lib/systemd/system/$unit"
+done
+for unit in keen-posture-session.service keen-posture-session.timer; do
+ install -D -m 0644 "packaging/$unit" "$root/usr/lib/systemd/user/$unit"
+done
+sed -i 's|/usr/local/bin/keen-agent|/usr/bin/keen-agent|' "$root/lib/systemd/system/keen-posture-host.service" "$root/usr/lib/systemd/user/keen-posture-session.service"
+install -D -m 0644 packaging/keen-posture-session.desktop "$root/usr/share/doc/keen-agent/keen-posture-session.desktop"
+install -D -m 0644 examples/posture.yaml "$root/usr/share/doc/keen-agent/examples/posture.yaml"
+install -D -m 0644 docs/posture-linux.md "$root/usr/share/doc/keen-agent/posture.md"
 install -d "$root/usr/share/doc/keen-agent" "$root/DEBIAN"
 cp LICENSE NOTICE README.md "$root/usr/share/doc/keen-agent/"
 cp -r licenses "$root/usr/share/doc/keen-agent/"
 cat > "$root/DEBIAN/control" <<EOF
 Package: keen-agent
-Version: 0.1.6-1+deb${VERSION_ID}u1.${suite}
+Version: 0.1.7-1+${revision}
 Architecture: $arch
 Maintainer: KEEN maintainers <mig5@mig5.net>
 Depends: ca-certificates, passwd, systemd
@@ -32,7 +45,7 @@ cat > "$root/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -eu
 if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
- systemctl disable --now keen-agent.service || true
+ systemctl disable --now keen-agent.service keen-posture-host.timer keen-posture-host.service || true
 fi
 EOF
 cat > "$root/DEBIAN/postrm" <<'EOF'
@@ -43,4 +56,4 @@ if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
 EOF
 chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/prerm" "$root/DEBIAN/postrm"
 mkdir -p /out
-dpkg-deb --root-owner-group --build "$root" "/out/keen-agent_0.1.6-1+deb${VERSION_ID}u1.${suite}_${arch}.deb"
+dpkg-deb --root-owner-group --build "$root" "/out/keen-agent_0.1.7-1+${revision}_${arch}.deb"

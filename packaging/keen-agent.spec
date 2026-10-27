@@ -1,5 +1,5 @@
 Name: keen-agent
-Version: 0.1.6
+Version: 0.1.8
 Release: 1%{?dist}
 Summary: KEEN evidence log collection agent
 License: Apache-2.0
@@ -19,17 +19,31 @@ install -D -m 0755 %{_sourcedir}/keen-agent/packaging/setup-account.sh %{buildro
 mkdir -p %{buildroot}%{_docdir}/keen-agent
 cp %{_sourcedir}/keen-agent/README.md %{_sourcedir}/keen-agent/LICENSE %{_sourcedir}/keen-agent/NOTICE %{buildroot}%{_docdir}/keen-agent/
 cp -r %{_sourcedir}/keen-agent/licenses %{buildroot}%{_docdir}/keen-agent/
+for unit in keen-posture-host.service keen-posture-host.timer; do
+ install -D -m 0644 %{_sourcedir}/keen-agent/packaging/$unit %{buildroot}%{_unitdir}/$unit
+done
+for unit in keen-posture-session.service keen-posture-session.timer; do
+ install -D -m 0644 %{_sourcedir}/keen-agent/packaging/$unit %{buildroot}%{_prefix}/lib/systemd/user/$unit
+done
+sed -i 's|/usr/local/bin/keen-agent|/usr/bin/keen-agent|' %{buildroot}%{_unitdir}/keen-posture-host.service %{buildroot}%{_prefix}/lib/systemd/user/keen-posture-session.service
+install -D -m 0644 %{_sourcedir}/keen-agent/docs/posture.md %{buildroot}%{_docdir}/keen-agent/posture.md
+install -D -m 0644 %{_sourcedir}/keen-agent/examples/posture.yaml %{buildroot}%{_docdir}/keen-agent/examples/posture.yaml
+install -D -m 0644 %{_sourcedir}/keen-agent/packaging/keen-posture-session.desktop %{buildroot}%{_docdir}/keen-agent/keen-posture-session.desktop
 %post
 %{_libexecdir}/keen-agent/setup-account
 %preun
 if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
- systemctl disable --now keen-agent.service || :
+ systemctl disable --now keen-agent.service keen-posture-host.timer keen-posture-host.service || :
 fi
 %postun
 if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
 %files
 %{_bindir}/keen-agent
 %{_unitdir}/keen-agent.service
+%{_unitdir}/keen-posture-host.service
+%{_unitdir}/keen-posture-host.timer
+%{_prefix}/lib/systemd/user/keen-posture-session.service
+%{_prefix}/lib/systemd/user/keen-posture-session.timer
 %{_libexecdir}/keen-agent
 %dir %attr(0750,root,root) %{_sysconfdir}/keen-agent
 %config(noreplace) %attr(0640,root,root) %{_sysconfdir}/keen-agent/config.yaml

@@ -1,0 +1,36 @@
+[Unit]
+Description=KEEN read-only host security posture observation
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/keen-agent -command posture-host
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=keen-posture-host
+TimeoutStartSec=120
+UMask=0077
+NoNewPrivileges=yes
+# CAP_NET_ADMIN is needed to READ nftables/iptables, and also permits writes.
+# Legacy iptables also needs raw IP sockets (CAP_NET_RAW); IPAddressDeny blocks traffic.
+# Confine it to this short-lived helper; never grant it to the sending agent.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+IPAddressDeny=any
+MemoryMax=192M
+TasksMax=24
+LimitNOFILE=128

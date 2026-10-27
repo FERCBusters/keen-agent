@@ -228,6 +228,9 @@ func collectJournal(c Config, s Source, sp *Spool) error {
 	for _, unit := range s.Units {
 		args = append(args, "--unit="+unit)
 	}
+	if s.Parser == "posture" {
+		args = append(args, "_SYSTEMD_UNIT=keen-posture-host.service", "+", "_SYSTEMD_USER_UNIT=keen-posture-session.service")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/journalctl", args...)
@@ -264,11 +267,23 @@ func collectJournal(c Config, s Source, sp *Spool) error {
 			}
 			event := parse(c, s, message, stamp)
 			event.Fields["journal.cursor"] = cursor
-			for _, k := range []string{"_SYSTEMD_UNIT", "_BOOT_ID", "SYSLOG_IDENTIFIER", "PRIORITY", "_PID", "_UID", "_GID", "_COMM", "_HOSTNAME"} {
+			for _, k := range []string{"_SYSTEMD_UNIT", "_SYSTEMD_USER_UNIT", "_TRANSPORT", "_BOOT_ID", "SYSLOG_IDENTIFIER", "PRIORITY", "_PID", "_UID", "_GID", "_COMM", "_HOSTNAME"} {
 				var v string
 				json.Unmarshal(record[k], &v)
 				if len(v) <= 4096 {
 					event.Fields[k] = c.redact(v)
+				}
+			}
+			if s.Parser == "posture" {
+				if err := normalizePosture(&event); err != nil {
+					if err := sp.reject(); err != nil {
+						return err
+					}
+					if err := sp.addFiltered(s, nil, key, next); err != nil {
+						return err
+					}
+					st = next
+					continue
 				}
 			}
 			if s.Parser == "syslog" {

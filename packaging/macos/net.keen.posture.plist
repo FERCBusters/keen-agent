@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>net.keen.posture</string>
+<key>ProgramArguments</key><array><string>/usr/local/libexec/keen-posture</string><string>-command</string><string>once</string><string>-config</string><string>/Library/Application Support/KEEN/Posture/config.json</string></array>
+<key>UserName</key><string>root</string>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>3600</integer>
+<key>ProcessType</key><string>Background</string>
+<key>Umask</key><integer>63</integer>
+</dict></plist>

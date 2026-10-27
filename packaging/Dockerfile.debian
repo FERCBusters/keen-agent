@@ -1,5 +1,6 @@
 ARG RELEASE=13
-FROM debian:${RELEASE} AS build
+ARG DISTRIBUTION=debian
+FROM ${DISTRIBUTION}:${RELEASE} AS build
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar gzip build-essential dpkg-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .

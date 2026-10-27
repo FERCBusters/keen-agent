@@ -41,7 +41,7 @@ The standard reverse proxy endpoint is `https://keen.example.org/api/v1/otlp/log
 
 ## Build and install the agent on a Linux server
 
-Use a maintained Go toolchain supporting Go 1.25 or newer. Dependencies are pinned in `go.mod` and `go.sum`.
+Use a maintained Go toolchain supporting Go 1.26 or newer. Dependencies are pinned in `go.mod` and `go.sum`.
 
 ```sh
 cd keen-agent
@@ -125,7 +125,7 @@ A recorded update demonstrates an observed maintenance action. A compliance clai
 
 ## Security and privacy
 
-The agent has no inbound listener, remote command channel, plugin loading, template execution or shell-based parser. Its only child process is `/usr/bin/journalctl` with fixed arguments and validated unit names. Parsing uses bounded inputs and Go regular expressions. Install the binary, configuration, CA files, log directories and token under trusted ownership.
+The agent has no inbound listener, remote command channel, plugin loading, template execution or shell-based parser. In normal log-collector mode its only child process is `/usr/bin/journalctl` with fixed arguments and validated unit names. The optional, separately executed posture collectors use a fixed read-only command allowlist; see [posture security boundaries](docs/posture.md#security-model). Parsing uses bounded inputs and Go regular expressions. Install the binary, configuration, CA files, log directories and token under trusted ownership.
 
 Default redaction covers common password/token assignments, bearer tokens and authentication/cookie headers. `redact` adds RE2 expressions, applied before the spool. KEEN applies its existing redaction and optional privacy masking again before evidence storage. These patterns cannot guarantee removal of every secret or personal datum: review actual source formats, minimize selected logs and add organization-specific rules. The private spool is **not encrypted** by the agent; use host disk encryption if required. Inbound agent tokens are hashed in Postgres, and the agent must retain its plaintext token in a protected file. KEEN's existing database/object-storage encryption policies govern received evidence.
 
@@ -265,3 +265,15 @@ Use `parser: ossec` to collect JSON alerts on an OSSEC manager, with structured 
 See [OSSEC collection and evidence mapping](docs/ossec.md) for configuration, permissions, filtering and rotation.
 
 You probably need to add `keen-agent` user to the `ossec` group to be able to reach the logs.
+
+
+## Optional workstation posture
+
+Opt-in host and desktop collectors for disk encryption, firewalls, automatic
+updates, antivirus/EDR components and screen locking.
+
+They emit ordinary evidence through the existing queue; the main agent remains
+unprivileged. See [installation, coverage, semantics and security](docs/posture.md)
+and [the posture-only example](examples/posture.yaml). Collectors are disabled
+by default and require explicit activation. An observation is not a compliance
+verdict; unsupported or inaccessible state remains unknown.

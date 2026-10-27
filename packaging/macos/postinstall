@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+# Do not start until credentials have been provisioned by the operator.
+# Do not follow an existing symlink into another directory.
+for p in '/Library/Application Support/KEEN' '/Library/Application Support/KEEN/Posture' '/Library/Application Support/KEEN/Posture/state'; do
+  [[ ! -L "$p" ]] || exit 1
+  if [[ -e "$p" ]]; then
+    [[ -d "$p" && $(stat -f %u "$p") == 0 ]] || exit 1
+  else
+    mkdir "$p"
+  fi
+  chown root:wheel "$p"
+  chmod 700 "$p"
+done
+# Existing loaded job runs the updated binary on its next invocation.
+exit 0
