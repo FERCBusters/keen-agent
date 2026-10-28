@@ -14,7 +14,7 @@
 #   DEB_REPO       reprepro base directory (with conf/)
 #   RPM_REPO_ROOT  RPM repository root (<release>/rpm/<arch>/ beneath it)
 #   RPM_REMOTE     rsync destination for --sync
-#   TARGETS        build targets (default: debian12 debian13 fedora43 fedora44)
+#   TARGETS        build targets (default: debian12 debian13 fedora43 fedora44 ubuntu22.04 ubuntu24.04 ubuntu26.04)
 #
 # The version comes from VERSION. Nothing is published unless every target
 # builds, and each run builds in a fresh staging directory so a stale package
@@ -40,7 +40,7 @@ sign() {
   "$gpg_command" --local-user "$SIGNING_KEY" --batch --armor --detach-sign --output - "$1"
  fi
 }
-read -r -a targets <<< "${TARGETS:-debian12 debian13 fedora43 fedora44}"
+read -r -a targets <<< "${TARGETS:-debian12 debian13 fedora43 fedora44 ubuntu22.04 ubuntu24.04 ubuntu26.04}"
 version=$(cat VERSION)
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid VERSION: $version" >&2; exit 1; }
 for command in docker reprepro rpmsign rpm createrepo_c "$gpg_command"; do
