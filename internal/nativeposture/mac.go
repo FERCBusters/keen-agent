@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -158,6 +159,11 @@ func CollectMac(ctx context.Context, r Runner) []Observation {
 				}
 			}
 			if len(f) > 0 {
+				if v, err := query(ctx, r, "/usr/bin/pmset", "-g", "custom"); err == nil {
+					macLockPaths(f, parsePmset(v))
+				} else {
+					macLockPaths(f, nil)
+				}
 				out = append(out, observed("screen_lock", "macos_screensaver", "uid:"+uid, reason, f))
 			} else {
 				out = append(out, unavailable("screen_lock", "macos_screensaver"))
@@ -226,4 +232,119 @@ func parseMacScreenLock(raw string) map[string]string {
 		result = map[string]string{"password_required": "true", "password_delay_seconds": strconv.FormatUint(seconds, 10)}
 	}
 	return result
+}
+
+// macPowerSource is one pmset power profile: minutes until the display turns
+// off and until the system sleeps, 0 meaning never.
+type macPowerSource struct{ display, sleep int }
+
+var pmsetSection = regexp.MustCompile(`^(Battery|AC|UPS) Power:$`)
+var pmsetSetting = regexp.MustCompile(`^(displaysleep|sleep)\s+([0-9]{1,6})(?:\s.*)?$`)
+
+// parsePmset reads `pmset -g custom`. It returns nil unless every profile it
+// finds states both settings once.
+func parsePmset(raw string) map[string]macPowerSource {
+	sources := map[string]macPowerSource{}
+	seen := map[string]map[string]bool{}
+	current := ""
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if m := pmsetSection.FindStringSubmatch(line); m != nil {
+			current = m[1]
+			if _, dup := seen[current]; dup {
+				return nil
+			}
+			seen[current] = map[string]bool{}
+			continue
+		}
+		m := pmsetSetting.FindStringSubmatch(line)
+		if m == nil || current == "" {
+			continue
+		}
+		if seen[current][m[1]] {
+			return nil
+		}
+		seen[current][m[1]] = true
+		n, _ := strconv.Atoi(m[2])
+		s := sources[current]
+		if m[1] == "displaysleep" {
+			s.display = n
+		} else {
+			s.sleep = n
+		}
+		sources[current] = s
+	}
+	delete(sources, "UPS")
+	if _, ok := sources["AC"]; !ok {
+		return nil
+	}
+	for name := range sources {
+		if !seen[name]["displaysleep"] || !seen[name]["sleep"] {
+			return nil
+		}
+	}
+	return sources
+}
+
+// macLockPaths adds the combined result KEEN judges: whether the screen locks
+// automatically, after how long at most, and by which paths. The password is
+// required password_delay_seconds after the screen saver starts or the
+// display turns off. The display path counts only when every power profile
+// turns the display off (or sleeps), and its time is the slowest profile's.
+// Without a password delay or a measured path the result stays unknown.
+func macLockPaths(f map[string]string, power map[string]macPowerSource) {
+	if f["password_required"] == "false" {
+		f["automatic_lock_configured"] = "false"
+		return
+	}
+	delay, err := strconv.Atoi(f["password_delay_seconds"])
+	if f["password_required"] != "true" || err != nil || delay < 0 {
+		return
+	}
+	if power != nil {
+		_, battery := power["Battery"]
+		f["batteries_present"] = strconv.FormatBool(battery)
+	}
+	paths := map[string]int{}
+	if idle, err := strconv.Atoi(f["idle_seconds"]); err == nil && idle > 0 {
+		paths["screen_saver"] = idle
+	}
+	if power != nil {
+		worst, every := 0, true
+		for _, s := range power {
+			minutes := 0
+			for _, v := range []int{s.display, s.sleep} {
+				if v > 0 && (minutes == 0 || v < minutes) {
+					minutes = v
+				}
+			}
+			if minutes == 0 {
+				every = false
+				break
+			}
+			worst = max(worst, minutes*60)
+		}
+		if every {
+			paths["display_sleep"] = worst
+		}
+	}
+	if len(paths) == 0 {
+		// Never turning the display off and a screen saver set to never is a
+		// measured absence; an unset screen saver time is not.
+		if power != nil && f["idle_seconds"] == "0" {
+			f["automatic_lock_configured"] = "false"
+		}
+		return
+	}
+	names, first := make([]string, 0, len(paths)), 0
+	for name, seconds := range paths {
+		names = append(names, name)
+		if first == 0 || seconds < first {
+			first = seconds
+		}
+	}
+	sort.Strings(names)
+	f["automatic_lock_configured"] = "true"
+	f["lock_after_seconds"] = strconv.Itoa(first + delay)
+	f["lock_paths"] = strings.Join(names, ",")
 }

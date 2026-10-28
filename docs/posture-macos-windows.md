@@ -14,7 +14,7 @@ key. It has no log collection.
 | Firewall | Application Firewall global state and PF enabled state separately | ActiveStore policy for Domain, Private and Public profiles; raw defaults preserved |
 | Malware | Apple XProtect package receipts/version, Defender health when installed | Defender service/realtime/signatures/scan dates, SecurityCenter registered third-party products |
 | Updates | Explicit managed or local software-update and App Store preferences, last successful check | Legacy WUA settings and successful check/install history, AU Group Policy, modern Update MDM values |
-| Screen lock | Console user screen-saver password/delay/idle preferences; machine managed preferences take precedence | One result per loaded local/domain/Entra user hive combining the machine inactivity limit, a password-protected selected screen saver (per-user policy overrides preferences) and sleep with sign-in on wake for the active power plan (power Group Policy overrides the plan) |
+| Screen lock | Console user password requirement and delay (`sysadminctl`), screen-saver idle time and display sleep per power profile (`pmset`), combined into a lock time; machine managed preferences take precedence | One result per loaded local/domain/Entra user hive combining the machine inactivity limit, a password-protected selected screen saver (per-user policy overrides preferences) and sleep with sign-in on wake for the active power plan (power Group Policy overrides the plan) |
 
 These are observations, not a single compliance verdict; KEEN judges them with
 versioned rules and, where an organisation sets them, its own targets. Examples: Windows
@@ -46,6 +46,16 @@ Lock and MDM device-lock policy are not resolved. Sleep capability comes from
 `GetPwrCapabilities`, called by the executable through `powrprof.dll` from the
 system directory; the script compiles no code. A device with no interactive session
 may produce no user screen-lock observation.
+
+macOS reports `automatic_lock_configured`, `lock_after_seconds` and `lock_paths`
+the same way. The password is required `password_delay_seconds` after the screen
+saver starts or the display turns off, so a path is the screen saver's idle time
+(when set) or the display turning off: the earlier of display sleep and system
+sleep in `pmset -g custom`, counted only when every power profile (mains, and
+battery on a laptop) turns the display off, using the slowest profile. The lock
+time is the quickest path plus the password delay. An unset screen saver time is
+not treated as "never", and power assertions that keep a display awake (video,
+`caffeinate`) are not resolved.
 
 ## Build and preview
 

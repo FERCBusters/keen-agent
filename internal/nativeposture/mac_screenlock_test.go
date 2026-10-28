@@ -70,6 +70,11 @@ func TestMacLiveScreenLockOverridesStalePasswordPreferences(t *testing.T) {
 			found = true
 			want := parseMacScreenLock(status)
 			want["idle_seconds"] = "600"
+			if want["password_required"] == "true" {
+				want["automatic_lock_configured"], want["lock_after_seconds"], want["lock_paths"] = "true", "900", "screen_saver"
+			} else {
+				want["automatic_lock_configured"] = "false"
+			}
 			if !reflect.DeepEqual(o.Facts, want) {
 				t.Fatal(o)
 			}
@@ -106,4 +111,98 @@ func TestMacStatusCaptureOnlyForFixedConsoleUserQuery(t *testing.T) {
 	if isMacScreenLockQuery("/bin/launchctl", args) || isMacScreenLockQuery("/usr/bin/defaults", macScreenLockArgs("501")) {
 		t.Fatal("non-status stderr captured")
 	}
+}
+
+const pmsetLaptop = `Battery Power:
+ Sleep On Power Button 1
+ lowpowermode         0
+ standby              1
+ sleep                1 (sleep prevented by coreaudiod)
+ displaysleep         2
+AC Power:
+ Sleep On Power Button 1
+ sleep                1
+ displaysleep         10
+`
+
+func TestPmsetProfiles(t *testing.T) {
+	got := parsePmset(pmsetLaptop)
+	if !reflect.DeepEqual(got, map[string]macPowerSource{"Battery": {2, 1}, "AC": {10, 1}}) {
+		t.Fatal(got)
+	}
+	desktop := parsePmset("AC Power:\n sleep 0\n displaysleep 15\n")
+	if !reflect.DeepEqual(desktop, map[string]macPowerSource{"AC": {15, 0}}) {
+		t.Fatal(desktop)
+	}
+	for name, raw := range map[string]string{
+		"empty":            "",
+		"no AC profile":    "Battery Power:\n sleep 1\n displaysleep 2\n",
+		"missing setting":  "AC Power:\n displaysleep 10\n",
+		"repeated setting": "AC Power:\n sleep 1\n displaysleep 10\n displaysleep 5\n",
+		"repeated profile": "AC Power:\n sleep 1\n displaysleep 10\nAC Power:\n sleep 1\n displaysleep 10\n",
+		"negative":         "AC Power:\n sleep -1\n displaysleep 10\n",
+	} {
+		if got := parsePmset(raw); got != nil {
+			t.Fatalf("%s: %v", name, got)
+		}
+	}
+}
+
+func TestMacLockPaths(t *testing.T) {
+	laptop := parsePmset(pmsetLaptop)
+	for _, tc := range []struct {
+		name  string
+		facts map[string]string
+		power map[string]macPowerSource
+		want  map[string]string
+	}{
+		// The reported Mac: no screen saver time set, so the display path decides.
+		{"display sleep with delay", map[string]string{"password_required": "true", "password_delay_seconds": "300"}, laptop,
+			map[string]string{"automatic_lock_configured": "true", "lock_after_seconds": "360", "lock_paths": "display_sleep", "batteries_present": "true"}},
+		{"slowest profile counts", map[string]string{"password_required": "true", "password_delay_seconds": "0"}, map[string]macPowerSource{"Battery": {2, 0}, "AC": {30, 0}},
+			map[string]string{"automatic_lock_configured": "true", "lock_after_seconds": "1800", "lock_paths": "display_sleep", "batteries_present": "true"}},
+		{"screen saver first", map[string]string{"password_required": "true", "password_delay_seconds": "0", "idle_seconds": "300"}, map[string]macPowerSource{"AC": {20, 0}},
+			map[string]string{"automatic_lock_configured": "true", "lock_after_seconds": "300", "lock_paths": "display_sleep,screen_saver", "batteries_present": "false"}},
+		{"a profile that never turns off", map[string]string{"password_required": "true", "password_delay_seconds": "0"}, map[string]macPowerSource{"Battery": {2, 1}, "AC": {0, 0}},
+			map[string]string{"batteries_present": "true"}},
+		{"never and no screen saver", map[string]string{"password_required": "true", "password_delay_seconds": "0", "idle_seconds": "0"}, map[string]macPowerSource{"AC": {0, 0}},
+			map[string]string{"automatic_lock_configured": "false", "batteries_present": "false"}},
+		{"password off", map[string]string{"password_required": "false"}, laptop,
+			map[string]string{"automatic_lock_configured": "false"}},
+		{"pmset unavailable", map[string]string{"password_required": "true", "password_delay_seconds": "300"}, nil,
+			map[string]string{}},
+		{"delay unknown", map[string]string{"password_required": "true"}, laptop,
+			map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := map[string]string{}
+			for k, v := range tc.facts {
+				f[k] = v
+			}
+			macLockPaths(f, tc.power)
+			for k := range tc.facts {
+				delete(f, k)
+			}
+			if !reflect.DeepEqual(f, tc.want) {
+				t.Fatal(f)
+			}
+		})
+	}
+}
+
+func TestMacCollectorReadsDisplaySleep(t *testing.T) {
+	f := fakeRunner{
+		"/usr/bin/stat -f %u /dev/console":                              "501",
+		"/bin/launchctl " + strings.Join(macScreenLockArgs("501"), " "): "screenLock delay is 300 seconds",
+		"/usr/bin/pmset -g custom":                                      pmsetLaptop,
+	}
+	for _, o := range CollectMac(context.Background(), f) {
+		if o.Check == "screen_lock" {
+			if o.Validate() != nil || o.Facts["automatic_lock_configured"] != "true" || o.Facts["lock_after_seconds"] != "360" {
+				t.Fatal(o)
+			}
+			return
+		}
+	}
+	t.Fatal("missing screen lock evidence")
 }
