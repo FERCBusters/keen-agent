@@ -47,6 +47,7 @@ type fakeKEEN struct {
 	t        *testing.T
 	keys     map[string]ed25519.PublicKey
 	nonces   map[string]string
+	proofs   map[string]bool
 	status   int
 	enrolled int
 	renewed  int
@@ -80,11 +81,20 @@ func (f *fakeKEEN) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/agents/enroll":
 		credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		sum := sha256.Sum256([]byte(credential))
-		msg, _ := ueu.Canonical(map[string]any{"context": "keen-agent-enroll-v1", "credential_sha256": hex.EncodeToString(sum[:]), "public_key": req["public_key"]})
+		var stamp struct {
+			Created int64 `json:"created"`
+		}
+		json.Unmarshal(body, &stamp)
+		if d := time.Now().Unix() - stamp.Created; d > 300 || d < -300 || f.proofs[req["proof_nonce"]] {
+			w.WriteHeader(400)
+			return
+		}
+		msg, _ := ueu.Canonical(map[string]any{"context": "keen-agent-enroll-v2", "created": stamp.Created, "credential_sha256": hex.EncodeToString(sum[:]), "proof_nonce": req["proof_nonce"], "public_key": req["public_key"]})
 		if !ed25519.Verify(pubRaw, msg, proof) {
 			w.WriteHeader(400)
 			return
 		}
+		f.proofs[req["proof_nonce"]] = true
 		if BootstrapPattern.MatchString(credential) {
 			if req["name"] != "host-1" || req["nonce"] == "" {
 				w.WriteHeader(400)
@@ -122,7 +132,7 @@ func (f *fakeKEEN) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func setup(t *testing.T) (*fakeKEEN, *httptest.Server) {
-	f := &fakeKEEN{t: t, keys: map[string]ed25519.PublicKey{}, nonces: map[string]string{}}
+	f := &fakeKEEN{t: t, keys: map[string]ed25519.PublicKey{}, nonces: map[string]string{}, proofs: map[string]bool{}}
 	s := httptest.NewTLSServer(f)
 	t.Cleanup(s.Close)
 	return f, s
@@ -157,6 +167,25 @@ func TestCodeEnrolmentAndRenewal(t *testing.T) {
 	pairwise := m.Identity().PairwiseKey
 	if pairwise == "" || store.id.PairwiseKey != pairwise {
 		t.Fatal("pairwise subject key must survive renewal")
+	}
+}
+
+func TestEveryEnrolmentAttemptSignsAFreshProof(t *testing.T) {
+	f, s := setup(t)
+	id, err := New(s.URL + "/api/v1/otlp/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := "kc_" + agentID + "." + strings.Repeat("A", 43)
+	// A retry after a lost response repeats the request with a new proof,
+	// which the fake server, like KEEN, requires.
+	for range 2 {
+		if _, err := Enroll(context.Background(), s.Client(), id, code, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.enrolled != 2 || len(f.proofs) != 2 {
+		t.Fatal(f.enrolled, f.proofs)
 	}
 }
 

@@ -273,23 +273,29 @@ valid for 24 hours) issued for a registered identity, or an enrollment
 profile's bootstrap key (`ke_<profile id>.<43 base64url>`). Body:
 
 ```json
-{"public_key": "…", "proof": "…", "name": "…", "nonce": "…"}
+{"public_key": "…", "created": 1793151600, "proof_nonce": "…", "proof": "…",
+ "name": "…", "nonce": "…"}
 ```
 
 `name` and `nonce` (32 random bytes, unpadded base64url, saved privately
 before the first attempt) are required for profile enrolment and absent for
-codes. `proof` is an Ed25519 signature by the new key over the canonical form
-of
+codes. `created` is the attempt's time in Unix seconds and `proof_nonce` 32
+fresh random bytes (unpadded base64url) for every attempt, retries included.
+`proof` is an Ed25519 signature by the new key over the canonical form of
 
 ```json
-{"context": "keen-agent-enroll-v1",
+{"context": "keen-agent-enroll-v2",
+ "created": 1793151600,
  "credential_sha256": "<hex SHA-256 of the credential>",
+ "proof_nonce": "…",
  "public_key": "…"}
 ```
 
-which proves possession of the key and binds it to that credential. A retry
-with the same code (or the same profile, name, nonce) and the same key returns
-the same binding; another key is refused. The response (the **grant**):
+which proves possession of the key and binds it to that credential. KEEN
+accepts a proof only within 300 seconds of `created` and accepts each
+`proof_nonce` once per key, so a recorded request cannot be replayed to fetch
+the grant. A retry with the same code (or the same profile, name, nonce), the
+same key and a fresh proof returns the same binding; another key is refused. The response (the **grant**):
 
 ```json
 {"agent": {"id", "name", "agent_type", "enrollment_profile_id", "expires_at", "enabled"},

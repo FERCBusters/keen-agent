@@ -260,6 +260,7 @@ func publicKey(priv ed25519.PrivateKey) string {
 // profile's bootstrap key (ke_) for a binding of this identity's public key.
 // Profile enrolment needs a name and the identity's saved enrolment nonce,
 // so a retried request after a lost response returns the same agent.
+// Each attempt proves possession of the key afresh.
 func Enroll(ctx context.Context, h *http.Client, id Identity, credential, userAgent string) (Grant, error) {
 	var g Grant
 	priv, err := id.Key()
@@ -278,7 +279,16 @@ func Enroll(ctx context.Context, h *http.Client, id Identity, credential, userAg
 	default:
 		return g, errors.New("not an enrolment code or bootstrap key")
 	}
-	if body["proof"], err = proof(priv, map[string]any{"context": "keen-agent-enroll-v1", "credential_sha256": credentialDigest(credential), "public_key": body["public_key"]}); err != nil {
+	// Every attempt, retries included, signs a fresh proof: KEEN accepts each
+	// proof nonce once and only near its creation time, so a recorded request
+	// cannot be replayed to fetch the grant.
+	proofNonce, err := NewSecret()
+	if err != nil {
+		return g, err
+	}
+	created := time.Now().Unix()
+	body["created"], body["proof_nonce"] = created, proofNonce
+	if body["proof"], err = proof(priv, map[string]any{"context": "keen-agent-enroll-v2", "created": created, "credential_sha256": credentialDigest(credential), "proof_nonce": proofNonce, "public_key": body["public_key"]}); err != nil {
 		return g, err
 	}
 	encoded, _ := json.Marshal(body)
