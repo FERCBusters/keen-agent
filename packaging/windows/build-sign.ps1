@@ -1,23 +1,68 @@
+# Signs with a certificate in the Windows certificate store (a hardware token or
+# similar, by thumbprint) or with Azure Artifact Signing (a metadata file naming
+# the account and certificate profile; sign in with `az login` first).
 [CmdletBinding()]
 param(
   [ValidateSet('amd64','arm64')][string]$Architecture='amd64',
   [string]$CertificateThumbprint,
+  [string]$ArtifactSigningMetadata,
+  [string]$ArtifactSigningDlib,
   [string]$TimestampUrl,
   [switch]$MachineStore,
   [switch]$Unsigned,
-  [string]$SignTool='signtool.exe',
+  [string]$SignTool,
   [string]$Wix='wix.exe'
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
-if (!$Unsigned -and (!$CertificateThumbprint -or !$TimestampUrl)) { throw 'Supply CertificateThumbprint and TimestampUrl, or explicitly use -Unsigned for testing.' }
-if ($CertificateThumbprint -and $CertificateThumbprint -notmatch '^[a-fA-F0-9]{40}$') { throw 'Expected a 40-character certificate thumbprint.' }
+$modes=@($Unsigned.IsPresent, [bool]$CertificateThumbprint, [bool]$ArtifactSigningMetadata) | Where-Object { $_ }
+if (@($modes).Count -ne 1) { throw 'Choose one of -CertificateThumbprint, -ArtifactSigningMetadata or -Unsigned (for testing).' }
+if ($CertificateThumbprint) {
+  if ($CertificateThumbprint -notmatch '^[a-fA-F0-9]{40}$') { throw 'Expected a 40-character certificate thumbprint.' }
+  if (!$TimestampUrl) { throw 'Supply -TimestampUrl from your certificate authority.' }
+}
 function Checked([string]$Command,[string[]]$Arguments) { & $Command @Arguments; if ($LASTEXITCODE -ne 0) { throw "$Command failed ($LASTEXITCODE)" } }
+if (!$Unsigned) {
+  # signtool from PATH, or else the newest x64 Windows SDK copy.
+  if (!$SignTool) {
+    $found=Get-Command 'signtool.exe' -ErrorAction SilentlyContinue
+    if ($found) { $SignTool=$found.Source }
+    else {
+      $SignTool=Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+        Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1 -ExpandProperty FullName
+      if (!$SignTool) { throw 'signtool.exe not found; install the Windows SDK or pass -SignTool.' }
+    }
+  }
+}
+if ($ArtifactSigningMetadata) {
+  $ArtifactSigningMetadata=(Resolve-Path -LiteralPath $ArtifactSigningMetadata).Path
+  $metadata=Get-Content -LiteralPath $ArtifactSigningMetadata -Raw | ConvertFrom-Json
+  foreach ($field in 'Endpoint','CodeSigningAccountName','CertificateProfileName') {
+    if (!($metadata.PSObject.Properties.Name -contains $field) -or !$metadata.$field) { throw "Artifact Signing metadata lacks $field." }
+  }
+  if ($metadata.Endpoint -notmatch '^https://[a-z0-9]+\.codesigning\.azure\.net/?$') { throw 'Artifact Signing Endpoint must be https://<region>.codesigning.azure.net' }
+  if (!$ArtifactSigningDlib) {
+    # The client tools install under %LOCALAPPDATA% by default; the dlib must
+    # match signtool's architecture (x64).
+    $roots=@("$env:LOCALAPPDATA\Microsoft\MicrosoftArtifactSigningClientTools","$env:ProgramFiles\Microsoft\MicrosoftArtifactSigningClientTools","${env:ProgramFiles(x86)}\Microsoft\MicrosoftArtifactSigningClientTools") | Where-Object { Test-Path -LiteralPath $_ }
+    $candidates=@($roots | ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -Filter 'Azure.CodeSigning.Dlib.dll' -ErrorAction SilentlyContinue })
+    $ArtifactSigningDlib=($candidates | Where-Object { $_.FullName -notmatch '\\x86\\' } | Select-Object -First 1).FullName
+    if (!$ArtifactSigningDlib) { throw 'Azure.CodeSigning.Dlib.dll not found; install Microsoft.Azure.ArtifactSigningClientTools or pass -ArtifactSigningDlib.' }
+  }
+  if (!(Test-Path -LiteralPath $ArtifactSigningDlib)) { throw "Artifact Signing dlib not found: $ArtifactSigningDlib" }
+  # Artifact Signing certificates last three days; the timestamp keeps signatures valid.
+  if (!$TimestampUrl) { $TimestampUrl='http://timestamp.acs.microsoft.com' }
+}
 function Sign([string]$File) {
   if ($Unsigned) { return }
-  $a=@('sign','/sha1',$CertificateThumbprint,'/s','My','/fd','SHA256','/tr',$TimestampUrl,'/td','SHA256')
-  if ($MachineStore) { $a += '/sm' }
-  # The installed token CSP/KSP prompts for its PIN. No exported key or PIN argument.
+  $a=@('sign','/fd','SHA256','/tr',$TimestampUrl,'/td','SHA256')
+  if ($ArtifactSigningMetadata) {
+    $a += @('/dlib',$ArtifactSigningDlib,'/dmdf',$ArtifactSigningMetadata)
+  } else {
+    $a += @('/sha1',$CertificateThumbprint,'/s','My')
+    if ($MachineStore) { $a += '/sm' }
+    # The installed token CSP/KSP prompts for its PIN. No exported key or PIN argument.
+  }
   Checked $SignTool ($a + $File)
   Checked $SignTool @('verify','/pa','/all','/v',$File)
 }

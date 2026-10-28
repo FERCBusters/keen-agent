@@ -14,7 +14,7 @@ The download area is `https://keen.cloud/downloads/keen-agent/<version>/`, with
 release. Every file there has a detached OpenPGP signature (`.asc`) made with
 the release key, and `SHA256SUMS` lists every file's SHA-256 and is itself
 signed. Windows and macOS installers are additionally signed with their
-platforms' code-signing identities. The keen.cloud `/agent` page links to the
+platforms' code-signing identities (Azure Artifact Signing or a certificate-store key on Windows, Developer ID on macOS). The keen.cloud `/agent` page links to the
 download area and explains how to verify downloads.
 
 The release key is `54A9 1143 AE0A B4F7 743B  01FE 888E D1B4 23A3 BC99`,
@@ -113,20 +113,62 @@ the setup app.
 
 ## 3. Windows installers
 
-On Windows with Go (the version in `go.mod`), Node.js 22.12+, npm, WiX 4+ and
-the Windows SDK `signtool`, with the code-signing token's middleware installed:
+On Windows with Go (the version in `go.mod`), Node.js 22.12+, npm and WiX 4+
+(`dotnet tool install --global wix`; for WiX 6 also `wix eula accept wix6`).
+`build-sign.ps1` signs in one of two ways.
+
+**Azure Artifact Signing.** Install the client tools and the Azure CLI once:
 
 ```powershell
+winget install -e --id Microsoft.Azure.ArtifactSigningClientTools
+winget install -e --id Microsoft.AzureCLI
+```
+
+The client tools bring `signtool`, the signing dlib, the .NET runtime and the
+Visual C++ runtime. In the Azure portal, give your account the **Artifact
+Signing Certificate Profile Signer** role on the Artifact Signing account
+(Access control (IAM)). Keep a metadata file outside the repository, with the
+endpoint for the account's region:
+
+```json
+{
+  "Endpoint": "https://<region>.codesigning.azure.net",
+  "CodeSigningAccountName": "<account name>",
+  "CertificateProfileName": "<certificate profile name>"
+}
+```
+
+Then sign in and build both architectures:
+
+```powershell
+az login
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\packaging\windows\build-sign.ps1 -Architecture amd64 -ArtifactSigningMetadata C:\keen-release\artifact-signing.json
+.\packaging\windows\build-sign.ps1 -Architecture arm64 -ArtifactSigningMetadata C:\keen-release\artifact-signing.json
+```
+
+The script finds the dlib under `%LOCALAPPDATA%\Microsoft\MicrosoftArtifactSigningClientTools`
+(or pass `-ArtifactSigningDlib`) and timestamps with
+`http://timestamp.acs.microsoft.com`. Artifact Signing certificates last three
+days, so the timestamp is what keeps signatures valid.
+
+**A certificate in the Windows certificate store** (a hardware token, for
+example), by thumbprint:
+
+```powershell
 .\packaging\windows\build-sign.ps1 -Architecture amd64 -CertificateThumbprint THUMBPRINT -TimestampUrl https://TSA
 .\packaging\windows\build-sign.ps1 -Architecture arm64 -CertificateThumbprint THUMBPRINT -TimestampUrl https://TSA
 ```
 
-Each run builds and signs `keen-posture.exe`, `keen-setup-helper.exe` and the
-setup app's executables, builds the MSI, signs it and verifies every
-signature. Output: `dist\windows-<arch>\keen-posture-<version>-windows-<arch>.msi`.
-The hardware token prompts for its PIN; no key or PIN is an argument.
-`-Unsigned` builds a test MSI without Authenticode signatures.
+Add `-MachineStore` for a certificate in the machine store. The token prompts
+for its PIN; no key or PIN is an argument.
+
+Either way, each run builds and signs `keen-posture.exe`,
+`keen-setup-helper.exe` and the setup app's executables, builds the MSI, signs
+it and verifies every signature. `signtool` comes from `PATH` or the newest
+Windows SDK (or pass `-SignTool`). Output:
+`dist\windows-<arch>\keen-posture-<version>-windows-<arch>.msi`. `-Unsigned`
+builds a test MSI without Authenticode signatures.
 
 Copy both MSIs to the Linux release host's `dist/windows-amd64/` and
 `dist/windows-arm64/`.
@@ -220,7 +262,7 @@ shows **Signature verified** and a continuous chain.
 | `packaging/build-packages.sh` | builds Linux packages in Docker (no publishing) |
 | `packaging/build-workstation.sh` | the same, with the setup app |
 | `packaging/Dockerfile.debian`, `Dockerfile.fedora`, `build-deb.sh`, `keen-agent.spec` | package definitions |
-| `packaging/windows/build-sign.ps1`, `Product.wxs` | the Windows installer |
+| `packaging/windows/build-sign.ps1`, `Product.wxs` | the Windows installer and its signing |
 | `packaging/macos/build-sign-notarize.sh` | the macOS package |
 | `packaging/stage-downloads.sh` | the signed download layout |
 | `release.sh` (untracked) | local repository paths and key for `release-linux.sh` |
