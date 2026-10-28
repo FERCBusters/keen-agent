@@ -47,6 +47,10 @@ message and the release announcement.
 
 ## 1. Prepare
 
+The setup app's tests and build need Node.js 24.15 or later (or 22.22.2 or
+later); `onboarding/.npmrc` makes `npm ci` refuse older versions, naming the
+package that needs a newer one.
+
 On a clean checkout of the commit to release:
 
 ```sh
@@ -104,7 +108,8 @@ exec packaging/release-linux.sh "$@"
 ```
 
 `--with-setup` adds the KEEN Setup desktop app to the Linux packages, for Linux
-workstations. It needs Node.js 22.12+ and npm on the release host and makes
+workstations. It needs Node.js 24.15 or later (or 22.22.2 or later) and npm on
+the release host and makes
 the package depend on GTK, NSS and Polkit, so publish it only where those are
 wanted; servers use the default. To build packages without publishing, use
 `sh packaging/build-packages.sh debian13 fedora44` (output in
@@ -113,7 +118,8 @@ the setup app.
 
 ## 3. Windows installers
 
-On Windows with Go (the version in `go.mod`), Node.js 22.12+, npm and WiX 4+
+On Windows with Go (the version in `go.mod`), Node.js 24.15 or later (or 22.22.2
+or later), npm and WiX 4+
 (`dotnet tool install --global wix`; for WiX 6 also `wix eula accept wix6`).
 `build-sign.ps1` signs in one of two ways.
 
@@ -175,7 +181,8 @@ Copy both MSIs to the Linux release host's `dist/windows-amd64/` and
 
 ## 4. macOS package
 
-On macOS with Go, Node.js 22.12+, npm, the Xcode command-line tools and the
+On macOS with Go, Node.js 24.15 or later (or 22.22.2 or later), npm, the Xcode
+command-line tools and the
 Developer ID identities in the keychain:
 
 ```sh
