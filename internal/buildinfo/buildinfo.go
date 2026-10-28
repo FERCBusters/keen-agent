@@ -7,4 +7,4 @@ package buildinfo
 
 // Version is the release version of keen-agent, keen-posture and the setup
 // helper.
-const Version = "0.2.1"
+const Version = "0.2.2"
