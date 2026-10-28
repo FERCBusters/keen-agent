@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"keen-agent/internal/buildinfo"
 	model "keen-agent/internal/posturemodel"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -57,7 +59,15 @@ func (LocalRunner) Run(ctx context.Context, path string, args []string, input []
 	}
 	c.WaitDelay = time.Second
 	if err := c.Run(); err != nil {
-		return nil, errors.New("native query failed")
+		// Name the tool and how it failed; its output is never reported.
+		var exit *exec.ExitError
+		switch {
+		case ctx.Err() != nil:
+			return nil, fmt.Errorf("native query %s timed out", filepath.Base(path))
+		case errors.As(err, &exit):
+			return nil, fmt.Errorf("native query %s exited with status %d", filepath.Base(path), exit.ExitCode())
+		}
+		return nil, fmt.Errorf("native query %s could not start", filepath.Base(path))
 	}
 	return out.Bytes(), nil
 }

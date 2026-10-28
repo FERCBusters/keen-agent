@@ -3,11 +3,8 @@ package nativeposture
 import (
 	"context"
 	_ "embed"
-	"encoding/base64"
-	"encoding/binary"
 	"golang.org/x/sys/windows"
 	"path/filepath"
-	"unicode/utf16"
 	"unsafe"
 )
 
@@ -39,12 +36,8 @@ func Collect(ctx context.Context, r Runner) ([]Observation, error) {
 	if e != nil {
 		return nil, e
 	}
-	words := utf16.Encode([]rune(powerCapabilities() + windowsReport))
-	b := make([]byte, len(words)*2)
-	for i, w := range words {
-		binary.LittleEndian.PutUint16(b[i*2:], w)
-	}
-	out, e := r.Run(ctx, filepath.Join(system, `WindowsPowerShell\v1.0\powershell.exe`), []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(b)}, nil)
+	args, input := windowsInvocation(powerCapabilities() + windowsReport)
+	out, e := r.Run(ctx, filepath.Join(system, `WindowsPowerShell\v1.0\powershell.exe`), args, input)
 	if e != nil {
 		return nil, e
 	}
