@@ -41,17 +41,19 @@ type EnrollmentConfig struct {
 }
 
 type Config struct {
-	Enrollment      EnrollmentConfig `yaml:"enrollment"`
-	Endpoint        string           `yaml:"endpoint"`
-	EvidenceMode    string           `yaml:"evidence_mode"`
-	CAFile          string           `yaml:"ca_file"`
-	StateDir        string           `yaml:"state_dir"`
-	QueueMB         int64            `yaml:"queue_mb"`
-	PollSeconds     int              `yaml:"poll_seconds"`
-	RetentionDays   int              `yaml:"retention_days"`
-	InitialLookback string           `yaml:"initial_lookback"`
-	Redact          []string         `yaml:"redact"`
-	Sources         []Source         `yaml:"sources"`
+	Enrollment EnrollmentConfig `yaml:"enrollment"`
+	// TokenFile is KEEN Agent 0.1's bearer token, read only to explain the upgrade.
+	TokenFile       string   `yaml:"token_file"`
+	Endpoint        string   `yaml:"endpoint"`
+	EvidenceMode    string   `yaml:"evidence_mode"`
+	CAFile          string   `yaml:"ca_file"`
+	StateDir        string   `yaml:"state_dir"`
+	QueueMB         int64    `yaml:"queue_mb"`
+	PollSeconds     int      `yaml:"poll_seconds"`
+	RetentionDays   int      `yaml:"retention_days"`
+	InitialLookback string   `yaml:"initial_lookback"`
+	Redact          []string `yaml:"redact"`
+	Sources         []Source `yaml:"sources"`
 	redactors       []*regexp.Regexp
 	lookback        time.Duration
 }
@@ -70,6 +72,9 @@ func config(path string) (Config, error) {
 	var extra any
 	if d.Decode(&extra) != io.EOF {
 		return c, errors.New("only one YAML document allowed")
+	}
+	if c.TokenFile != "" {
+		return c, errors.New("token_file is no longer used: this agent enrols its own key. In KEEN, choose Move to key on the agent, save the enrolment code to a file, replace token_file with enrollment.code_file naming it, then run -command enroll")
 	}
 	u, e := url.Parse(c.Endpoint)
 	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

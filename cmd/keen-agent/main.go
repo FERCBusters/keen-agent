@@ -175,6 +175,13 @@ func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error
 			if sp.sealer, e = newSealer(c, id); e != nil {
 				return e
 			}
+			upgraded, err := sp.upgradeQueue(c.Sources)
+			if err != nil {
+				return err
+			}
+			if upgraded > 0 {
+				log.Printf("queue: sealed %d records queued by an earlier agent version", upgraded)
+			}
 		}
 		if sp.sealer != nil && time.Now().After(nextExpire) {
 			nextExpire = time.Now().Add(time.Minute)

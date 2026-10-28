@@ -172,6 +172,23 @@ portal's `deploy/control/Caddyfile.example`). Set `CLOUD_AGENT_VERSION` in the
 portal's environment to the new version and restart it, so the `/agent` page
 links to the new files.
 
+## Linux-only releases
+
+The Linux packages and the workstation installers are separate artefacts that
+share the version number. A change that affects only the server agent can ship
+as a Linux release: set the next version, run step 2, and stop there.
+
+- Skip steps 3 to 5. The download area, its `latest` link and the portal's
+  `CLOUD_AGENT_VERSION` stay on the last release that included the Windows and
+  macOS installers, so the `/agent` page keeps linking to files that exist.
+- The workstation installers keep their own version until their next release;
+  that release takes whatever `VERSION` then holds, and skipped numbers are fine.
+- Ship every platform together when a change alters what KEEN and the agents
+  exchange (the envelope profile, request signing, enrolment or renewal), or
+  when it touches code the workstation packages use (`internal/agentauth`,
+  `internal/ueu`, `internal/nativeposture`, `internal/posture`, the setup app).
+  KEEN must accept the oldest agents still in service in any case.
+
 ## 6. Check the release
 
 From a machine that is not the build host:

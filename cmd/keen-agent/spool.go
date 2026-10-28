@@ -133,46 +133,8 @@ func (s *Spool) add(envelopes []map[string]any, key string, state any, filtered 
 		}
 		size := integer(m.Get([]byte("bytes")))
 		count := integer(m.Get([]byte("count")))
-		queue := t.Bucket(q)
-		var chain ueu.Chain
-		if b := m.Get([]byte("ueu_chain")); len(envelopes) > 0 && b != nil {
-			if err := json.Unmarshal(b, &chain); err != nil {
-				return err
-			}
-		}
-		for _, env := range envelopes {
-			sealed, err := ueu.Seal(env, s.sealer.producer.InstanceID, &chain, time.Now())
-			if err != nil {
-				return err
-			}
-			r := record{sealed.EvidenceID, sealed.EventType, sealed.EventTime, sealed.Outcome, string(sealed.Canonical), sealed.Hash, sealed.Sequence}
-			b, err := json.Marshal(queued{r, time.Now().UTC()})
-			if err != nil {
-				return err
-			}
-			size += int64(len(b))
-			if size > s.limit {
-				return full
-			}
-			seq, err := queue.NextSequence()
-			if err != nil {
-				return err
-			}
-			k := make([]byte, 8)
-			binary.BigEndian.PutUint64(k, seq)
-			if err = queue.Put(k, b); err != nil {
-				return err
-			}
-			count++
-		}
-		if len(envelopes) > 0 {
-			b, err := json.Marshal(chain)
-			if err != nil {
-				return err
-			}
-			if err = m.Put([]byte("ueu_chain"), b); err != nil {
-				return err
-			}
+		if err := s.seal(t, envelopes, &size, &count); err != nil {
+			return err
 		}
 		if key != "" {
 			b, e := json.Marshal(state)
@@ -205,6 +167,121 @@ func (s *Spool) add(envelopes []map[string]any, key string, state any, filtered 
 }
 
 // chainPosition reports the last sealed sequence for health reports.
+// seal chains envelopes and appends them to the queue within transaction t,
+// adding their bytes and count to size and count.
+func (s *Spool) seal(t *bolt.Tx, envelopes []map[string]any, size, count *int64) error {
+	if len(envelopes) == 0 {
+		return nil
+	}
+	m, queue := t.Bucket(meta), t.Bucket(q)
+	var chain ueu.Chain
+	if b := m.Get([]byte("ueu_chain")); b != nil {
+		if err := json.Unmarshal(b, &chain); err != nil {
+			return err
+		}
+	}
+	for _, env := range envelopes {
+		sealed, err := ueu.Seal(env, s.sealer.producer.InstanceID, &chain, time.Now())
+		if err != nil {
+			return err
+		}
+		r := record{sealed.EvidenceID, sealed.EventType, sealed.EventTime, sealed.Outcome, string(sealed.Canonical), sealed.Hash, sealed.Sequence}
+		b, err := json.Marshal(queued{r, time.Now().UTC()})
+		if err != nil {
+			return err
+		}
+		*size += int64(len(b))
+		if *size > s.limit {
+			return full
+		}
+		seq, err := queue.NextSequence()
+		if err != nil {
+			return err
+		}
+		k := make([]byte, 8)
+		binary.BigEndian.PutUint64(k, seq)
+		if err = queue.Put(k, b); err != nil {
+			return err
+		}
+		*count++
+	}
+	b, err := json.Marshal(chain)
+	if err != nil {
+		return err
+	}
+	return m.Put([]byte("ueu_chain"), b)
+}
+
+// legacyQueued is a record queued by KEEN Agent 0.1 as a plain event.
+type legacyQueued struct {
+	Event *Event `json:"event"`
+}
+
+// upgradeQueue seals the records an earlier agent version queued as plain
+// events, in their original order, so an upgrade neither loses them nor sends
+// them unsigned. It runs once the agent is enrolled and before collection.
+// A record the catalogue cannot express is counted as rejected, as new
+// records are.
+func (s *Spool) upgradeQueue(sources []Source) (int64, error) {
+	if s.sealer == nil {
+		return 0, nil
+	}
+	byName := map[string]Source{}
+	for _, source := range sources {
+		byName[source.Name] = source
+	}
+	var sealed int64
+	err := s.db.Update(func(t *bolt.Tx) error {
+		m := t.Bucket(meta)
+		size := integer(m.Get([]byte("bytes")))
+		count := integer(m.Get([]byte("count")))
+		rejected := integer(m.Get([]byte("rejected")))
+		var envelopes []map[string]any
+		var keys [][]byte
+		queue := t.Bucket(q)
+		c := queue.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var old legacyQueued
+			if json.Unmarshal(v, &old) != nil || old.Event == nil {
+				continue
+			}
+			source, ok := byName[old.Event.Source]
+			if !ok {
+				// The source has since been removed: the default evidence mode applies.
+				source = Source{Name: old.Event.Source}
+			}
+			out, err := s.sealer.envelopes(source, *old.Event)
+			if err != nil {
+				rejected++
+			}
+			envelopes = append(envelopes, out...)
+			size -= int64(len(v))
+			count--
+			keys = append(keys, append([]byte(nil), k...))
+		}
+		if len(keys) == 0 {
+			return nil
+		}
+		for _, k := range keys {
+			if err := queue.Delete(k); err != nil {
+				return err
+			}
+		}
+		if err := s.seal(t, envelopes, &size, &count); err != nil {
+			return err
+		}
+		sealed = int64(len(envelopes))
+		if err := putInt(m, "rejected", rejected); err != nil {
+			return err
+		}
+		if err := putInt(m, "bytes", size); err != nil {
+			return err
+		}
+		return putInt(m, "count", count)
+	})
+	return sealed, err
+}
+
 func (s *Spool) chainPosition() int64 {
 	var chain ueu.Chain
 	s.db.View(func(t *bolt.Tx) error {

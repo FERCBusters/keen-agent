@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/ed25519"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"keen-agent/internal/agentauth"
+
+	bolt "go.etcd.io/bbolt"
 	"keen-agent/internal/ueu"
 )
 
@@ -110,6 +113,66 @@ func TestQueueAndCheckpointAtomic(t *testing.T) {
 	s.ack(map[string]bool{b[0].EvidenceID: true})
 	if n, _, _ := s.stats(); n != 0 {
 		t.Fatal(n)
+	}
+}
+
+func TestUpgradeSealsRecordsQueuedByEarlierVersions(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	s, err := openSpool(dir, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	// Two records as KEEN Agent 0.1 queued them, one from a source since removed.
+	for _, source := range []string{"test", "removed"} {
+		e := event()
+		e.Source = source
+		b, _ := json.Marshal(map[string]any{
+			"event": map[string]any{"agent_version": "0.1.6", "id": "6f1c0f5e-2b0e-4a52-9a43-7c1f4b8f2d11", "timestamp": e.Timestamp, "source": e.Source, "action": e.Action, "outcome": e.Outcome, "severity": 3, "summary": e.Summary, "raw": e.Raw, "fields": e.Fields},
+			"added": time.Now().UTC(),
+		})
+		if err := s.db.Update(func(tx *bolt.Tx) error {
+			m := tx.Bucket(meta)
+			seq, _ := tx.Bucket(q).NextSequence()
+			k := make([]byte, 8)
+			binary.BigEndian.PutUint64(k, seq)
+			putInt(m, "bytes", integer(m.Get([]byte("bytes")))+int64(len(b)))
+			putInt(m, "count", integer(m.Get([]byte("count")))+1)
+			return tx.Bucket(q).Put(k, b)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Nothing changes before enrolment.
+	if n, err := s.upgradeQueue([]Source{rawSource}); n != 0 || err != nil {
+		t.Fatal(n, err)
+	}
+	s.sealer, _ = newSealer(Config{EvidenceMode: "all_lines"}, testIdentity(t, "https://keen.example/api/v1/otlp/logs"))
+	n, err := s.upgradeQueue([]Source{rawSource})
+	if err != nil || n != 2 {
+		t.Fatal(n, err)
+	}
+	records, _ := s.batch()
+	if len(records) != 2 || records[0].Sequence != 1 || records[1].Sequence != 2 {
+		t.Fatal(records)
+	}
+	for _, r := range records {
+		if r.EventType != "log.line.collected" || decoded(t, r)["integrity"] == nil {
+			t.Fatal(r)
+		}
+	}
+	count, size, _ := s.stats()
+	var stored int64
+	s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(q).ForEach(func(_, v []byte) error { stored += int64(len(v)); return nil })
+	})
+	if count != 2 || size != stored {
+		t.Fatal(count, size, stored)
+	}
+	// A second pass finds nothing left to upgrade.
+	if n, err := s.upgradeQueue([]Source{rawSource}); n != 0 || err != nil {
+		t.Fatal(n, err)
 	}
 }
 
@@ -414,6 +477,14 @@ func TestEnrollmentAndEvidenceModeConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestEarlierTokenConfigurationExplainsTheUpgrade(t *testing.T) {
+	text := "endpoint: https://keen.example/api/v1/otlp/logs\ntoken_file: /etc/keen-agent/token\nsources:\n  - name: journal\n    kind: journal\n    parser: syslog\n"
+	_, err := config(writeConfig(t, text))
+	if err == nil || !strings.Contains(err.Error(), "enrollment.code_file") {
+		t.Fatal(err)
 	}
 }
 

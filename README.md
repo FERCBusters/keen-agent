@@ -100,6 +100,26 @@ systemd unit. Packages install `/usr/bin/keen-agent`, the unit and
 upgrades keep configuration, identity and queue, and removal keeps them for
 deliberate cleanup.
 
+### Upgrade a server from 0.1
+
+KEEN Agent 0.1 authenticated with a bearer token and sent every parsed line.
+After upgrading the package, and before restarting the service:
+
+1. In KEEN, choose **Move to key** on the agent's card. Its token stops
+   working at once; KEEN shows a single-use enrolment code.
+2. In `/etc/keen-agent/config.yaml`, replace `token_file` with
+   `enrollment.code_file: /etc/keen-agent/enrollment-code`. The agent refuses
+   to start while `token_file` is present, and says why.
+3. To keep sending every line, set `evidence_mode: all_lines` (globally or per
+   source) and raise the agent's evidence mode limit in KEEN to match; the
+   default sends recognised events only.
+4. Save the code, enrol and restart, as in steps 3 and 4 above, then remove
+   `/etc/keen-agent/token`.
+
+Source positions are kept, so collection resumes where 0.1 stopped. Records
+0.1 had queued but not delivered are sealed as signed evidence after
+enrolment and sent first.
+
 ## Configure
 
 [examples/config.yaml](examples/config.yaml) documents every setting. Unknown

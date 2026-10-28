@@ -6,10 +6,8 @@ for group in systemd-journal adm www-data; do
  if getent group "$group" >/dev/null; then usermod -aG "$group" keen-agent; fi
 done
 install -d -o root -g keen-agent -m 0750 /etc/keen-agent
-# Never replace an existing credential or operator configuration.
-if [ ! -e /etc/keen-agent/token ]; then
- install -o root -g keen-agent -m 0640 /dev/null /etc/keen-agent/token
-fi
+# Never replace operator configuration. The agent enrols its own key with a
+# code or bootstrap key the operator installs; no credential file is created.
 if [ -f /etc/keen-agent/config.yaml ]; then
  chown root:keen-agent /etc/keen-agent/config.yaml
  chmod 0640 /etc/keen-agent/config.yaml
