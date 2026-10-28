@@ -18,7 +18,7 @@ sources:
       - /var/ossec/logs/alerts/*/*/ossec-alerts-*.json
 ```
 
-Keep your existing endpoint, token, state directory, redaction and other sources.
+Keep your existing endpoint, enrolment, state directory, redaction and other sources.
 Check the actual dated filenames on your installation before enabling the second
 pattern. Multiple paths to the same inode in one named source share a checkpoint.
 Files start at byte zero on first collection, so this may import existing history.
@@ -61,58 +61,56 @@ parent directories are refused. Other parsers retain their existing no-symlink p
 Custom OSSEC installations may place copied alert files beneath `/var/log`; the
 additional allowed root for `parser: ossec` is specifically `/var/ossec/logs/alerts`.
 
-## Evidence fields
+## Evidence
 
-The parser supports older OSSEC fields and the nested alert schema. Plain string
-values are exposed directly, so mapping conditions do not need extra JSON quotes.
+Each alert with a rule ID becomes a `security.alert.generated` envelope with
+these attributes:
 
-| Event field | Meaning |
+| Attribute | Meaning |
 | --- | --- |
-| `fields.parser` | `ossec` |
-| `fields.ossec.rule.id` | `rule.id`, or legacy `rule.sidid` / `rule.sid` |
-| `fields.ossec.rule.level` | Original OSSEC level |
-| `fields.ossec.rule.description` | `rule.description` or `rule.comment`; also the event summary |
-| `fields.ossec.rule.groups` | Sorted JSON array of groups, e.g. `["sshd","syslog"]` |
-| `fields.ossec.rule.firedtimes` | Upstream occurrence count, when present |
-| `fields.ossec.alert.id` | Original alert ID; KEEN Agent retains its own stable delivery UUID |
-| `fields.host.name`, `fields.host.ip` | Monitored host, taken from agent/legacy host fields |
-| `fields.ossec.agent.id` | Upstream OSSEC agent ID |
-| `fields.ossec.manager.name` | OSSEC manager name, when supplied |
-| `fields.source.ip`, `fields.client.ip` | Validated source IP; the same address in both fields |
-| `fields.destination.ip` | Validated destination IP |
-| `fields.source.port`, `fields.destination.port` | Reported ports |
-| `fields.user.name` / `actor` | Reported user |
-| `fields.process.name` | Reported program |
-| `fields.ossec.decoder.name` | Decoder name |
-| `fields.ossec.location` | Original log location in the alert |
-| `fields.log.file.path` | JSON alert file collected by KEEN Agent |
-| `fields.file.path` | File-integrity target from `syscheck` or legacy `SyscheckFile` |
-| `fields.ossec.syscheck.*` | Reported event, before/after MD5/SHA1/SHA256, size, permissions, UID/GID |
-| `fields.ossec.data.*` | Bounded scalar leaves from custom nested `data` fields |
+| `product` | `ossec` |
+| `rule_id` | `rule.id`, or legacy `rule.sidid` / `rule.sid` |
+| `level` | original OSSEC level (integer) |
+| `description` | `rule.description` or `rule.comment` (classified security-sensitive) |
+| `groups` | the rule groups, e.g. `["sshd", "syslog"]` |
+| `category` | the parser's classification, below |
 
-Legacy epoch-millisecond `TimeStamp` takes precedence; otherwise the parser accepts
-ISO timestamps (including numeric offsets without a colon) and OSSEC's older
-`YYYY Mon DD HH:MM:SS` form. Zone-less timestamps use the collector host's local
-timezone. Missing/invalid timestamps retain collection time and set
-`timestamp_status=collection_time_fallback`. The original vendor severity is retained;
-KEEN severity scales levels 0–15 to 0–10, with level 16 capped at 10.
+| Classification | `category` |
+| --- | --- |
+| Authentication failure or success groups | `auth.login` |
+| Syscheck/file-integrity alert | `file.integrity.alert` |
+| Explicit syscheck `added` / `modified` / `deleted` | `file.created` / `file.changed` / `file.deleted` |
+| Rootcheck | `host.integrity.alert` |
+| Other alerts | `ossec.alert` |
 
-Explicit rule groups determine normalised actions:
+KEEN's severity scales OSSEC levels 0–15 to 0–10. The reported user, source and
+destination addresses and agent names are left out of the envelope; with
+`evidence_mode: events_with_lines` (or `all_lines`) the redacted alert JSON is
+included as the envelope's payload, and in `events` mode only its SHA-256 and
+file offset are sent. Detection alerts do not establish whether active response
+ran or succeeded; collect actual response records separately when that evidence
+is required.
 
-| Classification | Action | Outcome |
-| --- | --- | --- |
-| Authentication failure groups | `auth.login` | `failure` |
-| Authentication success group | `auth.login` | `success` |
-| Syscheck/file-integrity alert | `file.integrity.alert` | `info` |
-| Explicit syscheck `added` / `modified` / `deleted` | `file.created` / `file.changed` / `file.deleted` | `info` |
-| Rootcheck | `host.integrity.alert` | `info` |
-| Other valid alert JSON | `ossec.alert` | `info` |
+The parser supports older OSSEC fields and the nested alert schema. Legacy
+epoch-millisecond `TimeStamp` takes precedence; otherwise it accepts ISO
+timestamps (including numeric offsets without a colon) and OSSEC's older
+`YYYY Mon DD HH:MM:SS` form. Zone-less timestamps use the collector host's
+local timezone; missing or invalid timestamps fall back to the collection time.
 
-The full JSON remains the raw evidence, subject to configured redaction. When
-redaction is configured, JSON string escapes are decoded before matching and the
-sanitized object is serialized again. Malformed JSON receives ordinary raw-text
-redaction. Detection alerts do not establish whether active response ran or succeeded;
-collect actual response records separately when that evidence is required.
+## Parsed fields for filtering
+
+Filters run on the parser's fields before anything becomes evidence, so they
+can use more detail than the envelope carries:
+
+| Field | Meaning |
+| --- | --- |
+| `ossec.rule.id`, `ossec.rule.level`, `ossec.rule.description`, `ossec.rule.groups` | rule identity, level, description, groups |
+| `ossec.alert.id` | original alert ID |
+| `host.name`, `host.ip`, `ossec.agent.id`, `ossec.manager.name` | monitored host and OSSEC agent |
+| `source.ip`, `client.ip`, `destination.ip`, `source.port`, `destination.port` | validated addresses and ports |
+| `user.name`, `process.name`, `ossec.decoder.name`, `ossec.location` | reported user, program, decoder and log location |
+| `file.path`, `ossec.syscheck.*` | file-integrity target and reported hashes, size and ownership |
+| `ossec.data.*` | bounded scalar leaves from custom nested `data` fields |
 
 ## Filtering before delivery
 
@@ -136,16 +134,15 @@ reaches KEEN. Keep important failures when they are needed to demonstrate monito
 
 ## Mapping in KEEN
 
-No KEEN server patch or OSSEC API credential is required. Delivery uses the existing
-agent identity and OTLP endpoint. Open an ingested event and choose **Create mapping
-from this event**. Keep `fields.parser = ossec`, then select relevant rule IDs,
-groups, host, IP, file path, action or outcome. The mapping builder can use custom
-structured-field keys even when a key is not offered as a preset.
+No KEEN server change or OSSEC API credential is required. Open an ingested
+alert and choose **Create mapping from this event**: match
+`action = security.alert.generated` and structured fields such as
+`ueu.attributes.rule_id`, `ueu.attributes.groups` or `ueu.attributes.category`.
 
-Examples: authentication failure rules can support access monitoring; syscheck rules
-can support integrity monitoring; rootcheck alerts can support host-security controls.
-For a group match, use a contains condition including the JSON quotes, such as
-`"syscheck"`. Choose framework controls appropriate to your audit purpose.
+Examples: authentication failure rules can support access monitoring; syscheck
+rules can support integrity monitoring; rootcheck alerts can support
+host-security controls. Choose framework controls appropriate to your audit
+purpose.
 
 Reference schemas:
 - https://www.ossec.net/docs/docs/formats/json.html

@@ -4,8 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
-	"io"
+	"keen-agent/internal/agentauth"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -26,52 +25,35 @@ func TestEndpoint(t *testing.T) {
 		}
 	}
 }
+
+const testCode = "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 func TestRequestLimits(t *testing.T) {
-	good := `{"url":"keen.example","token":"0123456789abcdef"}`
+	good := `{"url":"keen.example","code":"` + testCode + `"}`
 	r, e := Decode(strings.NewReader(good))
-	if e != nil || !strings.HasSuffix(r.URL, "/api/v1/otlp/logs") {
+	if e != nil || !strings.HasSuffix(r.URL, "/api/v1/otlp/logs") || r.Code != testCode {
 		t.Fatal(e)
 	}
-	for _, bad := range []string{good + good, good + " trailing", `{"url":"keen.example","token":"short"}`, `{"url":"keen.example","token":"0123456789 abcdef"}`, `{"url":"keen.example","token":"0123456789abcdef","command":"sh"}`, strings.Repeat(" ", 32769)} {
+	for _, bad := range []string{good + good, good + " trailing", `{"url":"keen.example","code":"short"}`,
+		`{"url":"keen.example","token":"` + testCode + `"}`, `{"url":"keen.example","code":"ke_` + testCode[3:] + `"}`,
+		`{"url":"keen.example","code":"` + testCode + `","command":"sh"}`, strings.Repeat(" ", 32769)} {
 		if _, e := Decode(strings.NewReader(bad)); e == nil {
-			t.Error("accepted invalid request")
+			t.Error("accepted invalid request", bad)
 		}
 	}
 }
-func TestConnectionAcknowledgements(t *testing.T) {
-	for _, tc := range []struct {
-		status int
-		body   string
-		ok     bool
-	}{{200, `{"ok":true}`, true}, {200, `{}`, false}, {401, `{"ok":true}`, false}, {200, strings.Repeat("x", 4097), false}, {200, `null`, false}, {302, `{"ok":true}`, false}} {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/api/v1/agents/heartbeat" || r.Header.Get("Authorization") != "Bearer 0123456789abcdef" {
-				t.Error("incorrect credential endpoint")
-			}
-			w.Header().Set("Location", "https://redirect.invalid")
-			w.WriteHeader(tc.status)
-			io.WriteString(w, tc.body)
-		}))
-		h := server.Client()
-		h.CheckRedirect = client().CheckRedirect
-		e := verify(context.Background(), h, Request{server.URL + "/api/v1/otlp/logs", "0123456789abcdef"})
-		if (e == nil) != tc.ok {
-			t.Errorf("status %d: %v", tc.status, e)
-		}
-		server.Close()
-	}
-}
-func TestTLSRejectsBeforeSendingToken(t *testing.T) {
+
+func TestEnrolmentRefusesUntrustedTLSAndRedirects(t *testing.T) {
 	requests := 0
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		http.Redirect(w, r, "https://redirect.invalid/", http.StatusTemporaryRedirect)
 	}))
 	defer s.Close()
-	r := Request{s.URL + "/api/v1/otlp/logs", "0123456789abcdef"}
+	id, _ := agentauth.New(s.URL + "/api/v1/otlp/logs")
 	h := client()
 	defer h.CloseIdleConnections()
-	if verify(context.Background(), h, r) == nil || requests != 0 {
+	if _, e := agentauth.Enroll(context.Background(), h, id, testCode, "test"); e == nil || requests != 0 {
 		t.Fatal("untrusted TLS accepted")
 	}
 	pool := x509.NewCertPool()
@@ -81,13 +63,13 @@ func TestTLSRejectsBeforeSendingToken(t *testing.T) {
 	tr.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, s.Listener.Addr().String())
 	}
-	r.URL = "https://wrong-host.invalid/api/v1/otlp/logs"
-	if verify(context.Background(), h, r) == nil || requests != 0 {
+	wrong := id
+	wrong.Endpoint = "https://wrong-host.invalid/api/v1/otlp/logs"
+	if _, e := agentauth.Enroll(context.Background(), h, wrong, testCode, "test"); e == nil || requests != 0 {
 		t.Fatal("wrong TLS hostname accepted")
 	}
-	r.URL = s.URL + "/api/v1/otlp/logs"
-	if e := verify(context.Background(), h, r); e != nil || requests != 1 {
-		t.Fatal("valid trusted TLS refused", e)
+	if _, e := agentauth.Enroll(context.Background(), h, id, testCode, "test"); e == nil || requests != 1 {
+		t.Fatal("redirect followed", e)
 	}
 	if tr.Proxy != nil {
 		t.Fatal("environment proxy enabled")

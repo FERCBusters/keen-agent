@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"keen-agent/internal/agentauth"
 	p "keen-agent/internal/nativeposture"
 	"os"
 	"os/signal"
@@ -23,7 +24,7 @@ func once(ctx context.Context, path string) error {
 	if e != nil {
 		return e
 	}
-	return p.Deliver(ctx, c, p.NewReport(all, false))
+	return p.Deliver(ctx, c, all, time.Now().UTC())
 }
 func loop(ctx context.Context, path string) error {
 	c, e := p.LoadConfig(path)
@@ -42,29 +43,37 @@ func loop(ctx context.Context, path string) error {
 	}
 }
 func main() {
-	command := flag.String("command", "report", "report, otlp, once, run, or service (Windows)")
-	config := flag.String("config", "", "absolute protected JSON config path (delivery only)")
+	command := flag.String("command", "report", "report, preview, enroll, once, run, or service (Windows)")
+	config := flag.String("config", "", "absolute protected JSON config path (enrolment and delivery)")
 	diagnostics := flag.Bool("diagnostics", false, "include unavailable probes in local report")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	var e error
 	switch *command {
-	case "report", "otlp":
+	case "report", "preview":
 		var all []p.Observation
 		all, e = p.Collect(ctx, p.LocalRunner{})
-		if e == nil {
-			r := p.NewReport(all, *diagnostics)
-			if *command == "otlp" {
-				var b []byte
-				b, e = p.Payload(r)
-				if e == nil {
-					_, e = os.Stdout.Write(append(b, '\n'))
-				}
-			} else {
+		if e == nil && *command == "report" {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			e = enc.Encode(p.NewReport(all, *diagnostics))
+		} else if e == nil {
+			// The envelopes this device would send, with a throwaway pseudonym key.
+			var envelopes []map[string]any
+			envelopes, e = p.Preview(all)
+			if e == nil {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
-				e = enc.Encode(r)
+				e = enc.Encode(envelopes)
+			}
+		}
+	case "enroll":
+		var c p.Config
+		if c, e = p.LoadConfig(*config); e == nil {
+			var id agentauth.Identity
+			if id, e = p.Enroll(ctx, c); e == nil {
+				fmt.Println("Enrolled as agent " + id.AgentID)
 			}
 		}
 	case "once":

@@ -1,8 +1,10 @@
 # macOS and Windows posture companion
 
-`cmd/keen-posture` is a standalone Go companion using the same observation schema
-and KEEN OTLP attributes as the Linux agent. It does not port the Linux journal,
-file-tail or enrollment machinery.
+`cmd/keen-posture` is the native workstation companion for macOS and Windows. It
+measures posture with the same observation model as the Linux collectors and
+sends each measured setting as a signed UEU observation
+([evidence format](evidence-format.md)), with its own enrolled identity and
+key. It has no log collection.
 
 ## Implemented coverage
 
@@ -14,7 +16,8 @@ file-tail or enrollment machinery.
 | Updates | Explicit managed or local software-update and App Store preferences, last successful check | Legacy WUA settings and successful check/install history, AU Group Policy, modern Update MDM values |
 | Screen lock | Console user screen-saver password/delay/idle preferences; machine managed preferences take precedence | One result per loaded local/domain/Entra user hive combining the machine inactivity limit, a password-protected selected screen saver (per-user policy overrides preferences) and sleep with sign-in on wake for the active power plan (power Group Policy overrides the plan) |
 
-These are observations, not a single compliance verdict. Examples: Windows
+These are observations, not a single compliance verdict; KEEN judges them with
+versioned rules and, where an organisation sets them, its own targets. Examples: Windows
 BitLocker can be fully encrypted with protection suspended; registering an AV
 product differs from Defender reporting realtime enabled; an update schedule
 and a successful installation timestamp answer different questions. Windows
@@ -44,9 +47,9 @@ Lock and MDM device-lock policy are not resolved. Sleep capability comes from
 system directory; the script compiles no code. A device with no interactive session
 may produce no user screen-lock observation.
 
-## Build and generate reports
+## Build and preview
 
-Requires Go matching go.mod (1.26+). Build on the target platform:
+Requires Go matching go.mod. Build on the target platform:
 
 ```
 go build -trimpath -o keen-posture ./cmd/keen-posture
@@ -57,133 +60,112 @@ Use `keen-posture.exe` as the output name on Windows. From an elevated shell:
 macOS:
 ```
 sudo ./keen-posture -command report -diagnostics > mac-posture.json
+sudo ./keen-posture -command preview > mac-envelopes.json
 ```
 
 Windows PowerShell:
 ```
 .\keen-posture.exe -command report -diagnostics | Out-File -Encoding utf8 windows-posture.json
+.\keen-posture.exe -command preview | Out-File -Encoding utf8 windows-envelopes.json
 ```
 
-Omit `-diagnostics` for observed-only output. `-command otlp` prints a KEEN OTLP
-JSON request without sending it. `report` and `otlp` require no token/config and
-do not contact KEEN. Reports include relevant drive identifiers, account UID/SID,
-product names and timestamps; no recovery keys, tokens, usernames, browser
-history, full registry export or full system profiler dump is collected.
-Review reports before sharing them. They are the intended input for refining
-coverage on real macOS/Windows installations.
+`report` prints the raw observations (`-diagnostics` adds unavailable probes);
+`preview` prints the UEU envelopes a run would send, including the coverage
+record, with account identifiers pseudonymised by a throwaway key. Neither
+needs configuration or contacts KEEN. Reports include drive identifiers,
+account UID/SID, product names and timestamps; no recovery keys, credentials,
+usernames, browser history, full registry export or system profiler dump is
+collected. Review reports before sharing them.
 
 ## Workstation setup
 
-The installers include **KEEN Setup**. Open it after installation to enter the
-instance domain and an individual workstation token. It verifies the token over
-HTTPS, writes the protected configuration, enables boot startup and starts the
-collector. See [setup and signing](workstation-setup.md). Manual provisioning
-below remains available for administrators.
+The installers include **KEEN Setup**. Open it after installation and enter
+the KEEN address and the single-use enrolment code issued for the workstation.
+It enrols the companion, writes the protected configuration, enables boot
+startup and starts the collector. See [workstation setup](workstation-setup.md).
+Administrators can also provision manually, below.
 
-## Delivery
+## Enrolment and delivery
 
-`-command once -config ABSOLUTE_PATH` collects, queues and delivers; `run` repeats
-at `interval_seconds` (300..86400; default 3600). Windows `service` integrates
-with SCM. macOS uses a launchd hourly oneshot; change StartInterval in its plist
-to change that schedule (the config interval only controls run/service).
+The configuration (`packaging/macos/config.example.json`,
+`packaging/windows/config.example.json`) names the HTTPS endpoint (ending in
+`/v1/otlp/logs`, no credentials, query or fragment), the private state
+directory, `interval_seconds` (300..86400; default 3600) and, until the
+device has enrolled, `enrollment_code_file`. System CA trust only; no insecure
+mode, redirect following or environment proxy.
 
-Config examples are under `packaging/macos` and `packaging/windows`. Endpoint must
-be HTTPS ending in `/v1/otlp/logs`, with no embedded credentials/query/fragment.
-System CA trust only; no insecure mode, redirect following or environment proxy.
-Config and token must be protected; on macOS root-owned mode 0600 with trusted
-parents, state directory 0700. On Windows ownership must be SYSTEM or
-Administrators and the DACL must grant access only to these principals; directory
-junctions/reparse points are rejected. Provision under the installer-created
-private directory. Do not use user-writable parents/custom paths.
+`-command enroll -config ABSOLUTE_PATH` generates the device's Ed25519 key pair
+and pairwise pseudonym key in the state directory and binds the public key with
+the code. After that the code file can be deleted and removed from the
+configuration: the key is the credential, and the companion renews it before it
+expires. `-command once` collects, seals and delivers; `run` repeats at
+`interval_seconds`; Windows `service` integrates with the service manager.
+macOS uses a launchd hourly oneshot; change `StartInterval` in its plist to
+change that schedule.
 
-The Bolt queue retains up to 128 reports, each at most 900 KB. No oldest-record
-eviction. On saturation a new report fails; old reports remain. Existing reports
-are drained before new ones so the queue can recover. IDs and timestamps are
-stable on retries. A whole report is acknowledged only on HTTP 200 with a JSON
-object and no reported partial failure. Partial rejection retains the report;
-correct the receiver/configuration before retrying. Delivery is at least once;
-KEEN should deduplicate IDs. Retries occur at the scheduled interval (no tight
-retry loop). A collection/delivery pass has a five-minute deadline. No periodic heartbeat,
-automatic enrollment, token refresh, custom CA option or queue repair CLI is
-implemented in this companion yet.
+Config, code file and state must be private: on macOS root-owned, mode 0600
+files and a 0700 state directory with trusted parents; on Windows owned by
+SYSTEM or Administrators with a DACL granting only those principals, and no
+junctions or reparse points. Provision under the installer-created private
+directory.
 
-## macOS signed and notarized installer
+Each run's observations and its coverage record are sealed into the chained
+queue (`pending.db`, at most 4,096 envelopes; a full queue refuses new runs and
+keeps older evidence), then sent in signed batches of up to 64. An envelope
+leaves the queue only on an unambiguous acknowledgement, keeping its evidence
+ID and bytes across retries. After delivery the companion sends a signed
+heartbeat with its version, queue size and chain position. A run has a
+five-minute deadline; retries wait for the next run.
 
-Run `packaging/macos/build-sign-notarize.sh` **on macOS** with:
+### Manual provisioning on macOS
 
-```
-export APPLICATION_IDENTITY='Developer ID Application: YOUR NAME (TEAMID)'
-export INSTALLER_IDENTITY='Developer ID Installer: YOUR NAME (TEAMID)'
-export NOTARY_PROFILE='keen-notary'
-./packaging/macos/build-sign-notarize.sh
-```
-
-Create the named notarytool keychain profile beforehand using Apple's supported
-credential flow. The script builds a universal Intel/Apple Silicon executable,
-signs with hardened runtime/timestamp, packages, signs the PKG, submits and checks
-notarization, staples, then verifies the package. No Apple password is embedded
-in source or passed by this script. Output: `dist/macos/keen-posture-0.1.10.pkg`.
-
-The installer creates `/Library/Application Support/KEEN/Posture` and its state
-directory, installs `/usr/local/libexec/keen-posture` and the launch daemon, and
-**does not enable delivery automatically**. Copy/edit the example config into
-that private directory and provision the token without putting it in shell
-history. Set config/token root:wheel mode 0600. Test:
+The package installs `/usr/local/libexec/keen-posture`, the launch daemon and
+`/Library/Application Support/KEEN/Posture` with its state directory, and does
+not start delivery. As root, write the configuration and the code (mode 0600,
+without putting the code in shell history), then:
 
 ```
+sudo /usr/local/libexec/keen-posture -command enroll -config '/Library/Application Support/KEEN/Posture/config.json'
+sudo rm '/Library/Application Support/KEEN/Posture/enrollment-code'
 sudo /usr/local/libexec/keen-posture -command once -config '/Library/Application Support/KEEN/Posture/config.json'
 sudo launchctl bootstrap system /Library/LaunchDaemons/net.keen.posture.plist
 ```
 
-Stop with `launchctl bootout system/net.keen.posture` before removing files. Keep
-or deliberately destroy the private config/token/state separately. No automatic
-credential removal is performed by upgrades. On an upgrade, the next launchd
-invocation uses the updated binary.
+Remove `enrollment_code_file` from the configuration once enrolled. Stop with
+`launchctl bootout system/net.keen.posture` before removing files. Upgrades keep
+the configuration, identity and queue; the next launchd run uses the updated
+binary.
 
-## Windows MSI and Harica hardware-token signing
+### Manual provisioning on Windows
 
-Requires Go, Windows SDK SignTool, .NET and a separately installed WiX CLI
-supporting the v4 schema (`wix build`, WiX 4+). Pin the exact WiX/SDK toolchain in
-your release environment; this script does not download tools or certificates.
-Install Harica's token middleware/CSP/KSP and its certificate into the Windows
-certificate store. The private key remains on the token. Use the certificate
-thumbprint (SHA-1 **selection identifier**, not signature algorithm) and your
-chosen RFC3161 timestamp URL:
-
-```
-.\packaging\windows\build-sign.ps1 -Architecture amd64 -CertificateThumbprint YOUR40HEXTHUMBPRINT -TimestampUrl https://YOUR-TSA
-```
-
-Use `-MachineStore` only when the certificate is in LocalMachine\My. Otherwise
-CurrentUser\My is used. The token middleware handles PIN prompting; the script
-has no PIN/private-key parameter. It signs EXE first, builds the MSI containing
-that EXE, signs MSI, then verifies both with SignTool. Both signature and timestamp
-digests use SHA-256. `-Unsigned` explicitly produces development artifacts.
-`-Architecture arm64` builds native ARM64 separately; validate PowerShell module
-availability on your ARM installation. Keep MSI product architecture consistent
-for an upgrade; do not install both architectures on one machine.
-
-Install the MSI elevated. It creates a automatic-start LocalSystem service and a
-private ProgramData directory; it does not start unconfigured collection. Then:
+Install the MSI elevated. It creates an automatic-start LocalSystem service and
+a private ProgramData directory, and does not start unconfigured collection.
+Then, elevated:
 
 ```
 .\packaging\windows\provision.ps1 -Endpoint https://keen.example/api/v1/otlp/logs
 ```
 
-This prompts for the token, writes protected config/state, enables automatic
-startup and starts the service. It refuses to overwrite existing credentials.
-For rotation, stop the service, edit protected files as Administrator, then
-restart. MSI upgrades stop the service; start it explicitly afterwards and
-confirm its startup mode. Uninstallation removes the service/binary but retains
-private data so credentials/queued evidence are not silently lost.
+This prompts (masked) for the enrolment code, writes the protected
+configuration, enrols, deletes the code and starts the service. It refuses to
+overwrite an existing configuration or state. MSI upgrades stop the service;
+start it afterwards. Uninstallation removes the service and binaries but keeps
+the private directory, so the identity and queued evidence are not silently
+lost.
 
 Windows collection uses an embedded fixed PowerShell script via the system
 Windows PowerShell executable, `-NoProfile`, fixed system module paths, and no
 ExecutionPolicy bypass. Restricted language mode, WDAC/AppLocker, disabled WMI
-providers or missing Defender/SecurityCenter will yield diagnostics. The Windows
-command timeout terminates PowerShell; it does not yet use a Job Object to kill
-all possible provider descendants. No arbitrary script/path/plugin execution
-is exposed by the companion.
+providers or missing Defender/SecurityCenter yield diagnostics and appear in
+the run's coverage record as unavailable. The command timeout terminates
+PowerShell; it does not yet use a Job Object to kill all possible provider
+descendants. No arbitrary script, path or plugin execution is exposed.
+
+## Building signed installers
+
+[Releasing](releasing.md) describes building and signing the MSI (Authenticode,
+with a hardware token) and the macOS package (Developer ID, notarised), and
+publishing them with OpenPGP signatures.
 
 References: [SignTool](https://learn.microsoft.com/windows/win32/seccrypto/signtool),
 [WiX service schema](https://docs.firegiant.com/wix/schema/wxs/serviceinstall/),

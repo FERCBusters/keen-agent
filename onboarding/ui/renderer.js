@@ -1,7 +1,7 @@
 const form = document.getElementById("setup"),
   button = document.getElementById("connect"),
   status = document.getElementById("status"),
-  token = document.getElementById("token");
+  code = document.getElementById("code");
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   button.disabled = true;
@@ -10,12 +10,12 @@ form.addEventListener("submit", async (event) => {
     "Waiting for administrator approval, then verifying the connection…";
   const request = {
     url: document.getElementById("url").value,
-    token: token.value,
+    code: code.value,
   };
   try {
     const result = await window.keenSetup.connect(request);
     if (result.ok) {
-      token.value = "";
+      code.value = "";
       form.hidden = true;
       status.className = "success";
       status.textContent =
@@ -30,7 +30,7 @@ form.addEventListener("submit", async (event) => {
     status.className = "error";
     status.textContent = "Setup could not finish. Please try again.";
   } finally {
-    request.token = "";
+    request.code = "";
     button.disabled = false;
   }
 });

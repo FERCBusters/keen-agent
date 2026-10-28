@@ -7,6 +7,7 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+	"keen-agent/internal/agentauth"
 	p "keen-agent/internal/nativeposture"
 	"os"
 	"path/filepath"
@@ -75,8 +76,13 @@ func prepare() error {
 }
 func protectFile(path string) error { return secure(path, false) }
 func configBytes(r Request) []byte {
-	b, _ := json.Marshal(map[string]any{"endpoint": r.URL, "token_file": filepath.Join(configRoot(), "token"), "state_dir": filepath.Join(configRoot(), "state"), "interval_seconds": 3600})
+	b, _ := json.Marshal(map[string]any{"endpoint": r.URL, "state_dir": filepath.Join(configRoot(), "state"), "interval_seconds": 3600})
 	return b
+}
+
+// identityStore is the posture service's protected state directory.
+func identityStore() agentauth.FileStore {
+	return agentauth.FileStore{Dir: filepath.Join(configRoot(), "state"), Check: p.PrivatePath}
 }
 func activate(ctx context.Context) error {
 	m, e := mgr.Connect()

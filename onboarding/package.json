@@ -1,6 +1,6 @@
 {
   "name": "keen-workstation-setup",
-  "version": "0.1.10",
+  "version": "0.2.0",
   "private": true,
   "description": "Set up a KEEN workstation connection",
   "main": "main.cjs",

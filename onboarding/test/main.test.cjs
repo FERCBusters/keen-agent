@@ -4,7 +4,7 @@ const test = require("node:test"),
   fs = require("node:fs"),
   path = require("node:path");
 const { pathToFileURL } = require("node:url");
-test("only the main setup frame can provision; tokens stay out of child arguments and temporary files are removed", async () => {
+test("only the main setup frame can provision; codes stay out of child arguments and temporary files are removed", async () => {
   const calls = [],
     writes = [],
     removed = [];
@@ -75,7 +75,7 @@ test("only the main setup frame can provision; tokens stay out of child argument
     Buffer,
   });
   await new Promise((r) => setImmediate(r));
-  const request = { url: "keen.example", token: "0123456789abcdef" };
+  const request = { url: "keen.example", code: "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" };
   const denied = await handler(
     {
       sender: window.webContents,
@@ -94,10 +94,10 @@ test("only the main setup frame can provision; tokens stay out of child argument
   );
   assert.equal(success.ok, true);
   const secret = writes.find(([file]) => file.endsWith("request.json"));
-  assert.equal(JSON.parse(secret[1]).token, request.token);
+  assert.equal(JSON.parse(secret[1]).code, request.code);
   assert.equal(secret[2].mode, 0o600);
   assert.equal(secret[2].flag, "wx");
-  assert.equal(JSON.stringify(calls).includes(request.token), false);
+  assert.equal(JSON.stringify(calls).includes(request.code), false);
   assert.equal(calls[0][0], "/usr/bin/pkexec");
   assert.equal(calls[0][1][0], "/usr/libexec/keen-setup-helper");
   assert.equal(removed[0][0], "/tmp/keen-setup-test");

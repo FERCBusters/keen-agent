@@ -1,6 +1,6 @@
 {
   "endpoint": "https://keen.example/api/v1/otlp/logs",
-  "token_file": "C:\\ProgramData\\KEEN\\Posture\\token",
   "state_dir": "C:\\ProgramData\\KEEN\\Posture\\state",
+  "enrollment_code_file": "C:\\ProgramData\\KEEN\\Posture\\enrollment-code",
   "interval_seconds": 3600
 }

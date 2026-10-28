@@ -1,7 +1,8 @@
 Name: keen-agent
-Version: 0.1.10
+# The release version comes from VERSION: rpmbuild --define "agent_version $(cat VERSION)".
+Version: %{agent_version}
 Release: 1%{?dist}
-Summary: KEEN evidence log collection agent
+Summary: KEEN signed evidence agent
 License: Apache-2.0
 Requires: ca-certificates, systemd, shadow-utils
 Requires(post): shadow-utils, systemd
@@ -12,7 +13,8 @@ Requires: polkit, gtk3, nss, alsa-lib, libXScrnSaver, mesa-libgbm
 %endif
 %global debug_package %{nil}
 %description
-Durable OTLP/HTTP evidence collection with per-agent credentials.
+Sends signed Universal Evidence Utility (UEU) evidence from servers and
+workstations to KEEN over OTLP/HTTP, with per-agent Ed25519 keys.
 %install
 install -D -m 0755 %{_sourcedir}/keen-agent/dist/keen-setup-helper %{buildroot}%{_libexecdir}/keen-setup-helper
 install -D -m 0644 %{_sourcedir}/keen-agent/packaging/keen-workstation.service %{buildroot}%{_unitdir}/keen-workstation.service

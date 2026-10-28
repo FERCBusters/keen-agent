@@ -9,7 +9,7 @@ const script = fs.readFileSync(
   "utf8",
 );
 for (const ok of [true, false])
-  test(`setup ${ok ? "success clears token" : "failure remains editable and inert"}`, async () => {
+  test(`setup ${ok ? "success clears code" : "failure remains editable and inert"}`, async () => {
     const dom = new JSDOM(html, { runScripts: "outside-only" }),
       w = dom.window,
       d = w.document;
@@ -24,19 +24,19 @@ for (const ok of [true, false])
     };
     w.eval(script);
     d.getElementById("url").value = "keen.example";
-    d.getElementById("token").value = "0123456789abcdef";
+    d.getElementById("code").value = "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     d.getElementById("setup").dispatchEvent(
       new w.Event("submit", { cancelable: true }),
     );
     assert.equal(d.getElementById("connect").disabled, true);
-    assert.deepEqual(seen, { url: "keen.example", token: "0123456789abcdef" });
+    assert.deepEqual(seen, { url: "keen.example", code: "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" });
     resolve(
       ok ? { ok: true } : { ok: false, error: "<img src=x onerror=alert(1)>" },
     );
     await new Promise((r) => setImmediate(r));
     assert.equal(d.getElementById("connect").disabled, false);
     if (ok) {
-      assert.equal(d.getElementById("token").value, "");
+      assert.equal(d.getElementById("code").value, "");
       assert.equal(d.getElementById("setup").hidden, true);
       assert.equal(d.getElementById("complete").hidden, false);
     } else {

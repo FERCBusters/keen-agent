@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"io"
+	"keen-agent/internal/ueu"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -27,25 +28,30 @@ type Source struct {
 	Include                     string        `yaml:"include"`
 	Exclude                     string        `yaml:"exclude"`
 	Multiline                   string        `yaml:"multiline_start"`
+	EvidenceMode                string        `yaml:"evidence_mode"`
 	include, exclude, multiline *regexp.Regexp
 }
+
+// EnrollmentConfig names the one-time credential exchanged for a key binding:
+// a single-use code from Admin, or a fleet profile's bootstrap key.
 type EnrollmentConfig struct {
-    BootstrapKeyFile string `yaml:"bootstrap_key_file"`
-    Name string `yaml:"name"`
+	CodeFile         string `yaml:"code_file"`
+	BootstrapKeyFile string `yaml:"bootstrap_key_file"`
+	Name             string `yaml:"name"`
 }
 
 type Config struct {
-    Enrollment *EnrollmentConfig `yaml:"enrollment"`
-	Endpoint        string   `yaml:"endpoint"`
-	TokenFile       string   `yaml:"token_file"`
-	CAFile          string   `yaml:"ca_file"`
-	StateDir        string   `yaml:"state_dir"`
-	QueueMB         int64    `yaml:"queue_mb"`
-	PollSeconds     int      `yaml:"poll_seconds"`
-	RetentionDays   int      `yaml:"retention_days"`
-	InitialLookback string   `yaml:"initial_lookback"`
-	Redact          []string `yaml:"redact"`
-	Sources         []Source `yaml:"sources"`
+	Enrollment      EnrollmentConfig `yaml:"enrollment"`
+	Endpoint        string           `yaml:"endpoint"`
+	EvidenceMode    string           `yaml:"evidence_mode"`
+	CAFile          string           `yaml:"ca_file"`
+	StateDir        string           `yaml:"state_dir"`
+	QueueMB         int64            `yaml:"queue_mb"`
+	PollSeconds     int              `yaml:"poll_seconds"`
+	RetentionDays   int              `yaml:"retention_days"`
+	InitialLookback string           `yaml:"initial_lookback"`
+	Redact          []string         `yaml:"redact"`
+	Sources         []Source         `yaml:"sources"`
 	redactors       []*regexp.Regexp
 	lookback        time.Duration
 }
@@ -73,16 +79,30 @@ func config(path string) (Config, error) {
 		return c, errors.New("endpoint path must end in /v1/otlp/logs")
 	}
 	if !filepath.IsAbs(c.StateDir) {
-        return c, errors.New("state_dir must be absolute")
-    }
-    if c.Enrollment == nil {
-        if !filepath.IsAbs(c.TokenFile) { return c, errors.New("token_file must be absolute") }
-    } else {
-        if c.TokenFile != "" { return c, errors.New("enrollment uses its private state directory; omit token_file") }
-        if !filepath.IsAbs(c.Enrollment.BootstrapKeyFile) { return c, errors.New("enrollment.bootstrap_key_file must be absolute") }
-        if c.Enrollment.Name == "" { c.Enrollment.Name, e = os.Hostname(); if e != nil { return c, errors.New("cannot determine enrollment hostname") } }
-        if !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$`).MatchString(c.Enrollment.Name) { return c, errors.New("invalid enrollment name") }
-    }
+		return c, errors.New("state_dir must be absolute")
+	}
+	en := &c.Enrollment
+	// Without either, an identity must already exist (the setup helper enrols
+	// workstations before writing their configuration).
+	if en.CodeFile != "" && en.BootstrapKeyFile != "" {
+		return c, errors.New("enrollment takes code_file or bootstrap_key_file, not both")
+	}
+	for _, p := range []string{en.CodeFile, en.BootstrapKeyFile} {
+		if p != "" && !filepath.IsAbs(p) {
+			return c, errors.New("enrollment credential paths must be absolute")
+		}
+	}
+	if en.BootstrapKeyFile != "" && en.Name == "" {
+		if en.Name, e = os.Hostname(); e != nil {
+			return c, errors.New("cannot determine enrollment hostname")
+		}
+	}
+	if en.Name != "" && !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$`).MatchString(en.Name) {
+		return c, errors.New("invalid enrollment name")
+	}
+	if _, e = ueu.ParseMode(c.EvidenceMode); e != nil {
+		return c, e
+	}
 	if c.QueueMB < 1 || c.QueueMB > 4096 || c.PollSeconds < 1 || c.PollSeconds > 300 || c.RetentionDays < 0 || c.RetentionDays > 365 {
 		return c, errors.New("invalid queue, polling or retention limit")
 	}
@@ -100,6 +120,9 @@ func config(path string) (Config, error) {
 			return c, errors.New("source names must be unique safe identifiers")
 		}
 		names[s.Name] = true
+		if _, err := ueu.ParseMode(s.EvidenceMode); err != nil {
+			return c, fmt.Errorf("%s: %w", s.Name, err)
+		}
 		if s.ExcludeMatch != "" && s.ExcludeMatch != "any" && s.ExcludeMatch != "all" {
 			return c, errors.New("exclude_match must be any (OR) or all (AND)")
 		}
@@ -152,7 +175,7 @@ func config(path string) (Config, error) {
 	if len(c.Redact) > 32 {
 		return c, errors.New("at most 32 custom redaction patterns are allowed")
 	}
-	for _, pattern := range append([]string{`(?i)"(?:password|passwd|secret|token|access_token|api_key|authorization)"\s*:\s*"[^"\r\n]*"`, `(?i)(authorization|cookie|set-cookie):[^\r\n]+`, `(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`, `(?i)(password|passwd|secret|token|api[_-]?key)[=: ]+["']?[^\s"'&,;]+`}, c.Redact...) {
+	for _, pattern := range append([]string{`(?i)"(?:password|passwd|secret|token|access_token|api_key|authorization)"\s*:\s*"[^"\r\n]*"`, `(?i)(authorization|cookie|set-cookie):[^\r\n]+`, `(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`, `(?i)(password|passwd|secret|token|api[_-]?key)\s*[=:]\s*["']?[^\s"'&,;]+`}, c.Redact...) {
 		if pattern == "" || len(pattern) > 2048 {
 			return c, errors.New("redaction patterns must contain 1 to 2048 bytes")
 		}

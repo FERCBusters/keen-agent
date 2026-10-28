@@ -1,14 +1,15 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	bolt "go.etcd.io/bbolt"
+	"keen-agent/internal/posturemodel"
+	"keen-agent/internal/ueu"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -17,37 +18,54 @@ var q = []byte("queue")
 var cp = []byte("checkpoints")
 var meta = []byte("meta")
 
+// Event is a parsed record before it becomes evidence. Fields drive
+// structured filters and classification; they are not sent as such.
 type Event struct {
-	AgentVersion string            `json:"agent_version"`
-	ID           string            `json:"id"`
-	Timestamp    time.Time         `json:"timestamp"`
-	Source       string            `json:"source"`
-	Actor        string            `json:"actor,omitempty"`
-	Action       string            `json:"action"`
-	Outcome      string            `json:"outcome"`
-	Severity     int               `json:"severity"`
-	Summary      string            `json:"summary"`
-	Raw          string            `json:"raw"`
-	Fields       map[string]string `json:"fields"`
-}
-type queued struct {
-	Event Event     `json:"event"`
-	Added time.Time `json:"added"`
-}
-type Spool struct {
-	db    *bolt.DB
-	limit int64
+	Timestamp time.Time         `json:"timestamp"`
+	Source    string            `json:"source"`
+	Actor     string            `json:"actor,omitempty"`
+	Action    string            `json:"action"`
+	Outcome   string            `json:"outcome"`
+	Severity  int               `json:"severity"`
+	Summary   string            `json:"summary"`
+	Raw       string            `json:"raw"`
+	Fields    map[string]string `json:"fields"`
+	// Ref locates the source record on this host (journal cursor or file offset).
+	Ref string `json:"ref,omitempty"`
+	// Posture observations and run coverage arrive through the posture parser.
+	Posture   *posturemodel.Observation `json:"posture,omitempty"`
+	Coverage  *posturemodel.Coverage    `json:"coverage,omitempty"`
+	Authority string                    `json:"authority,omitempty"`
 }
 
-func uuid() string {
-	var b [16]byte
-	if _, e := rand.Read(b[:]); e != nil {
-		panic(e)
-	}
-	b[6] = (b[6] & 15) | 64
-	b[8] = (b[8] & 63) | 128
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
+// record is a sealed envelope waiting for delivery.
+type record struct {
+	EvidenceID string    `json:"evidence_id"`
+	EventType  string    `json:"event_type"`
+	EventTime  time.Time `json:"event_time"`
+	Outcome    string    `json:"outcome"`
+	Canonical  string    `json:"canonical"`
+	Hash       string    `json:"hash"`
+	Sequence   int64     `json:"sequence"`
 }
+
+func (r record) sealed() ueu.Sealed {
+	return ueu.Sealed{EvidenceID: r.EvidenceID, EventType: r.EventType, EventTime: r.EventTime, Outcome: r.Outcome, Canonical: []byte(r.Canonical), Hash: r.Hash, Sequence: r.Sequence}
+}
+
+type queued struct {
+	Record record    `json:"record"`
+	Added  time.Time `json:"added"`
+}
+
+// Spool is the durable queue. Envelopes are sealed in the transaction that
+// queues them, so the sequence and hash chain never skip or repeat.
+type Spool struct {
+	db     *bolt.DB
+	limit  int64
+	sealer *sealer
+}
+
 func openSpool(dir string, limit int64) (*Spool, error) {
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return nil, e
@@ -99,12 +117,15 @@ func (s *Spool) checkpoint(key string, v any) error {
 		return json.Unmarshal(b, v)
 	})
 }
-func (s *Spool) add(events []Event, key string, state any, filtered ...filterTally) error {
+func (s *Spool) add(envelopes []map[string]any, key string, state any, filtered ...filterTally) error {
+	if len(envelopes) > 0 && s.sealer == nil {
+		return errors.New("agent is not enrolled; evidence cannot be sealed")
+	}
 	return s.db.Update(func(t *bolt.Tx) error {
 		m := t.Bucket(meta)
 		for _, tally := range filtered {
 			if tally.count > 0 {
-				key := "filtered:" + tally.source
+				key := tally.kind + ":" + tally.source
 				if err := putInt(m, key, integer(m.Get([]byte(key)))+tally.count); err != nil {
 					return err
 				}
@@ -113,11 +134,19 @@ func (s *Spool) add(events []Event, key string, state any, filtered ...filterTal
 		size := integer(m.Get([]byte("bytes")))
 		count := integer(m.Get([]byte("count")))
 		queue := t.Bucket(q)
-		for _, e := range events {
-			if e.AgentVersion == "" {
-				e.AgentVersion = version
+		var chain ueu.Chain
+		if b := m.Get([]byte("ueu_chain")); len(envelopes) > 0 && b != nil {
+			if err := json.Unmarshal(b, &chain); err != nil {
+				return err
 			}
-			b, err := json.Marshal(queued{e, time.Now().UTC()})
+		}
+		for _, env := range envelopes {
+			sealed, err := ueu.Seal(env, s.sealer.producer.InstanceID, &chain, time.Now())
+			if err != nil {
+				return err
+			}
+			r := record{sealed.EvidenceID, sealed.EventType, sealed.EventTime, sealed.Outcome, string(sealed.Canonical), sealed.Hash, sealed.Sequence}
+			b, err := json.Marshal(queued{r, time.Now().UTC()})
 			if err != nil {
 				return err
 			}
@@ -135,6 +164,15 @@ func (s *Spool) add(events []Event, key string, state any, filtered ...filterTal
 				return err
 			}
 			count++
+		}
+		if len(envelopes) > 0 {
+			b, err := json.Marshal(chain)
+			if err != nil {
+				return err
+			}
+			if err = m.Put([]byte("ueu_chain"), b); err != nil {
+				return err
+			}
 		}
 		if key != "" {
 			b, e := json.Marshal(state)
@@ -165,8 +203,21 @@ func (s *Spool) add(events []Event, key string, state any, filtered ...filterTal
 		return putInt(m, "count", count)
 	})
 }
-func (s *Spool) batch() ([]Event, error) {
-	out := []Event{}
+
+// chainPosition reports the last sealed sequence for health reports.
+func (s *Spool) chainPosition() int64 {
+	var chain ueu.Chain
+	s.db.View(func(t *bolt.Tx) error {
+		if b := t.Bucket(meta).Get([]byte("ueu_chain")); b != nil {
+			json.Unmarshal(b, &chain)
+		}
+		return nil
+	})
+	return chain.Sequence
+}
+
+func (s *Spool) batch() ([]record, error) {
+	out := []record{}
 	size := 0
 	e := s.db.View(func(t *bolt.Tx) error {
 		c := t.Bucket(q).Cursor()
@@ -178,7 +229,7 @@ func (s *Spool) batch() ([]Event, error) {
 			if size+len(v) > 700000 {
 				break
 			}
-			out = append(out, r.Event)
+			out = append(out, r.Record)
 			size += len(v)
 		}
 		return nil
@@ -204,11 +255,11 @@ func (s *Spool) ack(ids map[string]bool) error {
 			if e := json.Unmarshal(v, &r); e != nil {
 				return e
 			}
-			if remaining[r.Event.ID] {
+			if remaining[r.Record.EvidenceID] {
 				keys = append(keys, append([]byte(nil), k...))
 				size -= int64(len(v))
 				count--
-				delete(remaining, r.Event.ID)
+				delete(remaining, r.Record.EvidenceID)
 			}
 		}
 		for _, key := range keys {
@@ -240,11 +291,30 @@ func (s *Spool) reject() error {
 		return putInt(m, "rejected", integer(m.Get([]byte("rejected")))+1)
 	})
 }
-func (s *Spool) expire(days int) error {
-	if days == 0 {
-		return nil
+
+// discard describes queued evidence removed before delivery.
+type discard struct {
+	reason      string
+	count       int64
+	first, last int64
+}
+
+func (d *discard) note(r record) {
+	d.count++
+	if d.first == 0 || r.Sequence < d.first {
+		d.first = r.Sequence
 	}
-	return s.db.Update(func(t *bolt.Tx) error {
+	if r.Sequence > d.last {
+		d.last = r.Sequence
+	}
+}
+
+func (s *Spool) expire(days int) (discard, error) {
+	d := discard{reason: "queue_retention"}
+	if days == 0 {
+		return d, nil
+	}
+	err := s.db.Update(func(t *bolt.Tx) error {
 		m := t.Bucket(meta)
 		size := integer(m.Get([]byte("bytes")))
 		count := integer(m.Get([]byte("count")))
@@ -260,6 +330,7 @@ func (s *Spool) expire(days int) error {
 				size -= int64(len(v))
 				count--
 				dropped++
+				d.note(r.Record)
 				if e := c.Delete(); e != nil {
 					return e
 				}
@@ -273,14 +344,21 @@ func (s *Spool) expire(days int) error {
 		}
 		return putInt(m, "rejected", dropped)
 	})
+	return d, err
 }
 
 // purgeQueue deliberately discards pending delivery without resetting read positions.
-func (s *Spool) purgeQueue() (int64, error) {
-	var discarded int64
+func (s *Spool) purgeQueue() (discard, error) {
+	d := discard{reason: "operator_purge"}
 	err := s.db.Update(func(t *bolt.Tx) error {
 		m := t.Bucket(meta)
-		discarded = integer(m.Get([]byte("count")))
+		c := t.Bucket(q).Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var r queued
+			if json.Unmarshal(v, &r) == nil {
+				d.note(r.Record)
+			}
+		}
 		if err := t.DeleteBucket(q); err != nil {
 			return err
 		}
@@ -293,16 +371,40 @@ func (s *Spool) purgeQueue() (int64, error) {
 		if err := putInt(m, "bytes", 0); err != nil {
 			return err
 		}
-		return putInt(m, "rejected", integer(m.Get([]byte("rejected")))+discarded)
+		return putInt(m, "rejected", integer(m.Get([]byte("rejected")))+d.count)
 	})
-	return discarded, err
+	return d, err
+}
+
+// recordDiscard queues a signed statement of what was discarded, so KEEN can
+// explain the resulting gap in the sequence.
+func (s *Spool) recordDiscard(d discard) error {
+	if d.count == 0 || s.sealer == nil {
+		return nil
+	}
+	env, err := s.sealer.producer.Emit(ueu.Event{
+		Type: "evidence.records.discarded", Component: "queue", Action: "discard", Outcome: "info", Time: time.Now(),
+		Attributes: map[string]string{"reason": d.reason, "count": strconv.FormatInt(d.count, 10), "first_sequence": strconv.FormatInt(d.first, 10), "last_sequence": strconv.FormatInt(d.last, 10)},
+	})
+	if err != nil {
+		return err
+	}
+	return s.add([]map[string]any{env}, "", nil)
 }
 
 func (s *Spool) filteredStats(sources []Source) map[string]int64 {
+	return s.counters("filtered:", sources)
+}
+
+func (s *Spool) notEvidenceStats(sources []Source) map[string]int64 {
+	return s.counters("not_evidence:", sources)
+}
+
+func (s *Spool) counters(prefix string, sources []Source) map[string]int64 {
 	result := map[string]int64{}
 	s.db.View(func(t *bolt.Tx) error {
 		for _, source := range sources {
-			result[source.Name] = integer(t.Bucket(meta).Get([]byte("filtered:" + source.Name)))
+			result[source.Name] = integer(t.Bucket(meta).Get([]byte(prefix + source.Name)))
 		}
 		return nil
 	})

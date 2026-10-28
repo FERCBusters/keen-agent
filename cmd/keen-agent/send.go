@@ -2,42 +2,20 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
+
+	"keen-agent/internal/agentauth"
+	"keen-agent/internal/ueu"
 )
 
-type attribute struct {
-	Key   string            `json:"key"`
-	Value map[string]string `json:"value"`
-}
-
-func attr(k, v string) attribute { return attribute{k, map[string]string{"stringValue": v}} }
-func otlp(events []Event) []byte {
-	records := []any{}
-	for _, e := range events {
-		attributes := []attribute{attr("keen.event.id", e.ID), attr("keen.source", e.Source), attr("keen.action", e.Action), attr("keen.outcome", e.Outcome), attr("keen.summary", e.Summary), attr("keen.actor", e.Actor), attr("keen.field.agent.version", e.AgentVersion)}
-		keys := make([]string, 0, len(e.Fields))
-		for k := range e.Fields {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			v := e.Fields[k]
-			attributes = append(attributes, attr("keen.field."+k, v))
-		}
-		records = append(records, map[string]any{"timeUnixNano": fmt.Sprint(e.Timestamp.UnixNano()), "severityNumber": max(1, min(24, e.Severity*2+1)), "body": map[string]string{"stringValue": e.Raw}, "attributes": attributes})
-	}
-	b, _ := json.Marshal(map[string]any{"resourceLogs": []any{map[string]any{"resource": map[string]any{"attributes": []attribute{attr("service.name", "keen-agent")}}, "scopeLogs": []any{map[string]any{"scope": map[string]string{"name": "keen-agent", "version": "1"}, "logRecords": records}}}}})
-	return b
-}
 func client(c Config) (*http.Client, error) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if c.CAFile != "" {
@@ -54,7 +32,7 @@ func client(c Config) (*http.Client, error) {
 		}
 		tlsConfig.RootCAs = roots
 	}
-	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: tlsConfig, Proxy: nil, MaxIdleConns: 2, IdleConnTimeout: 60 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects refused") }}, nil
+	return agentauth.Client(&http.Transport{TLSClientConfig: tlsConfig, Proxy: nil, MaxIdleConns: 2, IdleConnTimeout: 60 * time.Second}), nil
 }
 
 type deliveryError struct {
@@ -63,48 +41,46 @@ type deliveryError struct {
 }
 
 func (e deliveryError) Error() string { return fmt.Sprintf("ingestion returned HTTP %d", e.status) }
-func send(c Config, sp *Spool, h *http.Client) error {
-	events, e := sp.batch()
-	if e != nil {
+
+func asDelivery(err error) error {
+	var rejected agentauth.HTTPError
+	if errors.As(err, &rejected) {
+		return deliveryError{rejected.Status, rejected.Retry}
+	}
+	return err
+}
+
+// signedBatch encodes records with a manifest signed by the current key.
+func signedBatch(id agentauth.Identity, records []record) ([]byte, error) {
+	sealed := make([]ueu.Sealed, len(records))
+	for i, r := range records {
+		sealed[i] = r.sealed()
+	}
+	return agentauth.SignedBatch(id, "keen-agent", version, sealed)
+}
+
+func send(c Config, sp *Spool, h *http.Client, id agentauth.Identity) error {
+	records, e := sp.batch()
+	if e != nil || len(records) == 0 {
 		return e
 	}
-	if len(events) == 0 {
-		return nil
+	payload, e := signedBatch(id, records)
+	for e == nil && len(payload) > 900000 && len(records) > 1 {
+		records = records[:len(records)/2]
+		payload, e = signedBatch(id, records)
 	}
-    value, e := credential(c)
-    if e != nil { return e }
-	payload := otlp(events)
-	for len(payload) > 900000 && len(events) > 1 {
-		events = events[:len(events)/2]
-		payload = otlp(events)
+	if e != nil {
+		return e
 	}
 	if len(payload) > 900000 {
 		return deliveryError{413, 0}
 	}
-	req, e := http.NewRequest("POST", c.Endpoint, bytes.NewReader(payload))
+	res, e := agentauth.Post(context.Background(), h, c.Endpoint, ueu.OperationLogs, payload, id, "keen-agent/"+version)
 	if e != nil {
-		return e
-	}
-	req.Header.Set("Authorization", "Bearer "+value)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "keen-agent/"+version)
-	response, e := h.Do(req)
-	if e != nil {
-		return errors.New("delivery failed (network/TLS); records retained")
-	}
-	defer response.Body.Close()
-	body, e := io.ReadAll(io.LimitReader(response.Body, 65537))
-	if e != nil || len(body) > 65536 {
-		return errors.New("invalid acknowledgement; records retained")
-	}
-	if response.StatusCode != 200 {
-		delay := time.Duration(0)
-		if seconds, e := time.ParseDuration(response.Header.Get("Retry-After") + "s"); e == nil {
-			delay = min(seconds, time.Hour)
-		} else if date, e := http.ParseTime(response.Header.Get("Retry-After")); e == nil {
-			delay = min(time.Until(date), time.Hour)
+		if strings.HasPrefix(e.Error(), "request failed") {
+			return errors.New("delivery failed (network/TLS); records retained")
 		}
-		return deliveryError{response.StatusCode, delay}
+		return asDelivery(e)
 	}
 	var result struct {
 		Partial *struct {
@@ -112,43 +88,30 @@ func send(c Config, sp *Spool, h *http.Client) error {
 			Message  string          `json:"errorMessage"`
 		} `json:"partialSuccess"`
 	}
-	if !bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) || json.Unmarshal(body, &result) != nil {
+	if !bytes.HasPrefix(bytes.TrimSpace(res.Body), []byte("{")) || json.Unmarshal(res.Body, &result) != nil {
 		return errors.New("invalid OTLP acknowledgement; records retained")
 	}
 	if result.Partial != nil && len(result.Partial.Rejected) > 0 && string(result.Partial.Rejected) != "0" && string(result.Partial.Rejected) != `"0"` {
 		return errors.New("OTLP partial success: delivery paused; inspect receiver and use replay explicitly")
 	}
 	ids := map[string]bool{}
-	for _, e := range events {
-		ids[e.ID] = true
+	for _, r := range records {
+		ids[r.EvidenceID] = true
 	}
 	return sp.ack(ids)
 }
 
-func heartbeat(c Config, h *http.Client, health map[string]any) error {
-	token, err := credential(c)
-	if err != nil {
-		return err
-	}
+func heartbeat(c Config, h *http.Client, id agentauth.Identity, health map[string]any) error {
 	payload, err := json.Marshal(health)
 	if err != nil {
 		return err
 	}
-	endpoint := strings.TrimSuffix(c.Endpoint, "/v1/otlp/logs") + "/v1/agents/heartbeat"
-	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+	_, err = agentauth.Post(context.Background(), h, agentauth.Base(c.Endpoint)+"/v1/agents/heartbeat", ueu.OperationHeartbeat, payload, id, "keen-agent/"+version)
 	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	response, err := h.Do(req)
-	if err != nil {
-		return errors.New("health delivery failed")
-	}
-	defer response.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(response.Body, 65536))
-	if response.StatusCode != 200 {
-		return deliveryError{response.StatusCode, 0}
+		if strings.HasPrefix(err.Error(), "request failed") {
+			return errors.New("health delivery failed")
+		}
+		return asDelivery(err)
 	}
 	return nil
 }

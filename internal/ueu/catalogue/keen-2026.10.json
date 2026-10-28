@@ -1,0 +1,307 @@
+{
+  "catalogue": {
+    "id": "keen",
+    "version": "2026.10",
+    "description": "KEEN's event catalogue for host and workstation evidence. Implementors may define their own catalogues; envelopes name the catalogue they follow."
+  },
+  "classifications": {
+    "evidence_metadata": "Measured settings, states, counts and times. Not personal data or a secret.",
+    "operational": "Names of software, services and configuration needed to interpret the evidence.",
+    "personal_data": "Identifies a person. Never sent; producers send a pseudonymous subject instead.",
+    "authentication_secret": "Passwords, tokens, keys and similar. Never sent.",
+    "security_sensitive": "Detail that would help an attacker. Sent only when an event type allows it."
+  },
+  "event_types": {
+    "endpoint.disk_encryption.observed": {
+      "class": "observation",
+      "object_type": "disk_encryption",
+      "summary": "Disk encryption ({component}, {scope}): {reason_code}",
+      "subject": "forbidden",
+      "payload": "forbidden",
+      "additional_facts": "scalar_string",
+      "facts": {
+        "encrypted": {"type": "boolean"},
+        "enabled": {"type": "boolean"},
+        "fully_encrypted": {"type": "boolean"},
+        "protection_enabled": {"type": "boolean"},
+        "transition_in_progress": {"type": "boolean"},
+        "native_encryption_enabled": {"type": "boolean"},
+        "encryption_percentage": {"type": "integer"},
+        "conversion_status": {"type": "integer"},
+        "protection_status": {"type": "integer"},
+        "coverage": {"type": "string", "classification": "operational"},
+        "filesystem": {"type": "string", "classification": "operational"},
+        "algorithm": {"type": "string", "classification": "operational"},
+        "key_status": {"type": "string"}
+      },
+      "prohibited": ["recovery_password", "recovery_key", "key_protector", "passphrase"]
+    },
+    "endpoint.screen_lock.observed": {
+      "class": "observation",
+      "object_type": "screen_lock",
+      "summary": "Screen lock ({component}, {scope}): {reason_code}",
+      "subject": "optional",
+      "payload": "forbidden",
+      "additional_facts": "scalar_string",
+      "facts": {
+        "automatic_lock_configured": {"type": "boolean"},
+        "lock_after_seconds": {"type": "integer"},
+        "lock_paths": {"type": "string_list"},
+        "password_required": {"type": "boolean"},
+        "password_required_configured": {"type": "boolean"},
+        "password_delay_seconds": {"type": "integer"},
+        "idle_seconds": {"type": "integer"},
+        "saver_enabled": {"type": "boolean"},
+        "screensaver_selected": {"type": "boolean"},
+        "lock_enabled": {"type": "boolean"},
+        "lock_delay_seconds": {"type": "integer"},
+        "total_idle_to_lock_seconds": {"type": "integer"},
+        "idle_activation_enabled": {"type": "boolean"},
+        "locking_disabled_by_policy": {"type": "boolean"},
+        "lock_setting_user_writable": {"type": "boolean"},
+        "lock_on_suspend_configured": {"type": "boolean"},
+        "lock_on_resume_configured": {"type": "boolean"},
+        "locker_bus_owned": {"type": "boolean"},
+        "inactivity_seconds": {"type": "integer"},
+        "machine_inactivity_seconds": {"type": "integer"},
+        "sleep_supported": {"type": "boolean"},
+        "modern_standby": {"type": "boolean"},
+        "batteries_present": {"type": "boolean"},
+        "wake_sign_in_ac": {"type": "boolean"},
+        "wake_sign_in_dc": {"type": "boolean"},
+        "sleep_after_ac_seconds": {"type": "integer"},
+        "sleep_after_dc_seconds": {"type": "integer"},
+        "mode": {"type": "string"},
+        "effective_protection": {"type": "string"}
+      },
+      "prohibited": ["password", "screen_saver_path", "username"]
+    },
+    "endpoint.antivirus.observed": {
+      "class": "observation",
+      "object_type": "antivirus",
+      "summary": "Antivirus ({component}, {scope}): {reason_code}",
+      "subject": "forbidden",
+      "payload": "forbidden",
+      "additional_facts": "scalar_string",
+      "facts": {
+        "antivirus_enabled": {"type": "boolean"},
+        "real_time_protection_enabled": {"type": "boolean"},
+        "service_enabled": {"type": "boolean"},
+        "healthy": {"type": "boolean"},
+        "installed": {"type": "boolean"},
+        "signatures_updated": {"type": "timestamp"},
+        "signatures_age_days": {"type": "integer"},
+        "quick_scan_finished": {"type": "timestamp"},
+        "full_scan_finished": {"type": "timestamp"},
+        "running_mode": {"type": "string"},
+        "product_name": {"type": "string", "classification": "operational"},
+        "product_state_raw": {"type": "integer"},
+        "version": {"type": "string", "classification": "operational"},
+        "age_seconds": {"type": "integer"},
+        "installed_unix_seconds": {"type": "integer"},
+        "clamd_process_present": {"type": "boolean"},
+        "clamonacc_process_present": {"type": "boolean"},
+        "on_access_prevention_configured": {"type": "boolean"},
+        "on_access_include_entries": {"type": "integer"},
+        "on_access_exclude_entries": {"type": "integer"},
+        "service_state": {"type": "string"},
+        "product_category": {"type": "string"}
+      },
+      "prohibited": []
+    },
+    "endpoint.firewall.observed": {
+      "class": "observation",
+      "object_type": "firewall",
+      "summary": "Firewall ({component}, {scope}): {reason_code}",
+      "subject": "forbidden",
+      "payload": "forbidden",
+      "additional_facts": "scalar_string",
+      "facts": {
+        "enabled": {"type": "boolean"},
+        "manager_active": {"type": "boolean"},
+        "enabled_raw": {"type": "integer"},
+        "input_policy": {"type": "string"},
+        "input_rule_count": {"type": "integer"},
+        "input_drop_policy_chains": {"type": "integer"},
+        "input_base_chains": {"type": "integer"},
+        "forward_base_chains": {"type": "integer"},
+        "total_rules": {"type": "integer"},
+        "accept_target_zone_count": {"type": "integer"},
+        "default_inbound_action": {"type": "string"},
+        "default_outbound_action": {"type": "string"},
+        "defaults": {"type": "string"},
+        "active_zones": {"type": "string", "classification": "operational"},
+        "default_zone": {"type": "string", "classification": "operational"},
+        "effective_protection": {"type": "string"}
+      },
+      "prohibited": []
+    },
+    "endpoint.automatic_updates.observed": {
+      "class": "observation",
+      "object_type": "automatic_updates",
+      "summary": "Automatic updates ({component}, {scope}): {reason_code}",
+      "subject": "forbidden",
+      "payload": "forbidden",
+      "additional_facts": "scalar_string",
+      "facts": {
+        "automatic_install_configured": {"type": "boolean"},
+        "automatic_os_install_configured": {"type": "boolean"},
+        "automatic_check_configured": {"type": "boolean"},
+        "legacy_scheduled_install_configured": {"type": "boolean"},
+        "scheduler_state": {"type": "string"},
+        "scheduler_enabled": {"type": "string"},
+        "configuration_effective": {"type": "string"},
+        "policy_no_auto_update": {"type": "integer"},
+        "policy_au_options": {"type": "integer"},
+        "notification_level": {"type": "integer"},
+        "service_enabled": {"type": "boolean"},
+        "read_only": {"type": "boolean"},
+        "reboot_required": {"type": "boolean"},
+        "unattended_upgrades_installed": {"type": "boolean"},
+        "error_after_last_success": {"type": "boolean"},
+        "allowed_origin_entries": {"type": "integer"},
+        "blacklist_entries": {"type": "integer"},
+        "last_search_success": {"type": "timestamp"},
+        "last_install_success": {"type": "timestamp"}
+      },
+      "prohibited": []
+    },
+    "endpoint.session_inventory.observed": {
+      "class": "observation",
+      "object_type": "session_inventory",
+      "summary": "Graphical sessions ({component}): {reason_code}",
+      "subject": "forbidden",
+      "payload": "forbidden",
+      "additional_facts": "reject",
+      "facts": {
+        "graphical_session_count": {"type": "integer"}
+      },
+      "prohibited": ["graphical_sessions"]
+    },
+    "software.package.changed": {
+      "class": "event",
+      "object_type": "package",
+      "summary": "Package {attributes.action} via {attributes.manager}: {attributes.package}",
+      "subject": "optional",
+      "payload": "optional",
+      "additional_attributes": "reject",
+      "attributes": {
+        "manager": {"type": "string", "classification": "operational"},
+        "action": {"type": "string"},
+        "package": {"type": "string", "classification": "operational"},
+        "old_version": {"type": "string", "classification": "operational"},
+        "new_version": {"type": "string", "classification": "operational"},
+        "packages": {"type": "string_list", "classification": "operational"},
+        "transaction_complete": {"type": "boolean"}
+      },
+      "prohibited": []
+    },
+    "user.authenticated": {
+      "class": "event",
+      "object_type": "account",
+      "summary": "Authentication via {attributes.service} ({attributes.method}): {outcome}",
+      "subject": "optional",
+      "payload": "optional",
+      "additional_attributes": "reject",
+      "attributes": {
+        "service": {"type": "string", "classification": "operational"},
+        "method": {"type": "string"},
+        "audit_type": {"type": "string"}
+      },
+      "prohibited": ["password", "source_address", "username"]
+    },
+    "privileged.action.completed": {
+      "class": "event",
+      "object_type": "command",
+      "summary": "Privileged action via {attributes.mechanism}: {attributes.executable}",
+      "subject": "optional",
+      "payload": "optional",
+      "additional_attributes": "reject",
+      "attributes": {
+        "mechanism": {"type": "string"},
+        "executable": {"type": "string", "classification": "operational"},
+        "audit_type": {"type": "string"}
+      },
+      "prohibited": ["command_line", "password", "username"]
+    },
+    "access.denied": {
+      "class": "event",
+      "object_type": "resource",
+      "summary": "Access denied ({attributes.audit_type}): {attributes.executable}",
+      "subject": "optional",
+      "payload": "optional",
+      "additional_attributes": "reject",
+      "attributes": {
+        "audit_type": {"type": "string"},
+        "syscall": {"type": "string"},
+        "executable": {"type": "string", "classification": "operational"}
+      },
+      "prohibited": ["username"]
+    },
+    "security.alert.generated": {
+      "class": "event",
+      "object_type": "alert",
+      "summary": "Security alert {attributes.rule_id} (level {attributes.level}): {attributes.description}",
+      "subject": "optional",
+      "payload": "optional",
+      "additional_attributes": "reject",
+      "attributes": {
+        "product": {"type": "string", "classification": "operational"},
+        "rule_id": {"type": "string"},
+        "level": {"type": "integer"},
+        "description": {"type": "string", "classification": "security_sensitive"},
+        "groups": {"type": "string_list"},
+        "category": {"type": "string"}
+      },
+      "prohibited": ["source_address", "username"]
+    },
+    "log.line.collected": {
+      "class": "event",
+      "object_type": "log_line",
+      "summary": "Log line from {attributes.source} ({attributes.parser})",
+      "subject": "forbidden",
+      "payload": "required",
+      "additional_attributes": "scalar_string",
+      "attributes": {
+        "source": {"type": "string", "classification": "operational"},
+        "parser": {"type": "string", "classification": "operational"},
+        "action": {"type": "string"}
+      },
+      "prohibited": []
+    },
+    "evidence.collection.completed": {
+      "class": "event",
+      "object_type": "collection",
+      "summary": "Collection by {attributes.collector}: {attributes.checks_observed_count} of {attributes.checks_attempted_count} checks observed",
+      "subject": "forbidden",
+      "payload": "forbidden",
+      "additional_attributes": "reject",
+      "attributes": {
+        "collector": {"type": "string"},
+        "run_id": {"type": "string"},
+        "checks_attempted": {"type": "string_list"},
+        "checks_observed": {"type": "string_list"},
+        "checks_unavailable": {"type": "string_list"},
+        "probes_unavailable": {"type": "string_list"},
+        "checks_attempted_count": {"type": "integer"},
+        "checks_observed_count": {"type": "integer"}
+      },
+      "prohibited": []
+    },
+    "evidence.records.discarded": {
+      "class": "event",
+      "object_type": "queue",
+      "summary": "{attributes.count} queued records discarded ({attributes.reason})",
+      "subject": "forbidden",
+      "payload": "forbidden",
+      "additional_attributes": "reject",
+      "attributes": {
+        "reason": {"type": "string"},
+        "count": {"type": "integer"},
+        "first_sequence": {"type": "integer"},
+        "last_sequence": {"type": "integer"}
+      },
+      "prohibited": []
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "content_digest": "sha-256=:qoH2z7vo6UkbmOE6EO10HG8Bc1jwwRuLfAIxFzD9VzY=:",
+  "envelope": "{\"asset\":{\"asset_type\":\"workstation\",\"identifier\":\"4f1c9a2e-0000-4000-8000-000000000001\",\"platform\":\"windows\"},\"catalogue\":{\"id\":\"keen\",\"version\":\"2026.10\"},\"event\":{\"action\":\"observe\",\"object_type\":\"screen_lock\",\"outcome\":\"observed\",\"reason_code\":\"user_lock_settings_observed\"},\"event_time\":\"2026-10-27T06:43:38.095Z\",\"event_type\":\"endpoint.screen_lock.observed\",\"evidence\":{\"payload_included\":false},\"evidence_id\":\"0192c4e1-7a3e-7c41-9a8e-5b1d2f3c4a5b\",\"evidence_time\":\"2026-10-27T06:43:38.101Z\",\"integrity\":{\"canonicalisation\":\"RFC8785\",\"hash_algorithm\":\"SHA-256\",\"previous_evidence_hash\":\"sha256:abababababababababababababababababababababababababababababababab\",\"sequence\":42,\"stream\":\"4f1c9a2e-0000-4000-8000-000000000001\"},\"mappings\":[],\"observation\":{\"facts\":{\"automatic_lock_configured\":true,\"lock_after_seconds\":1800,\"lock_paths\":[\"sleep_with_sign_in\"],\"screensaver_selected\":false},\"method\":\"native_query\",\"scope\":\"user\",\"valid_for_seconds\":86400},\"privacy\":{\"personal_data_included\":false,\"profile\":\"keen-default-1\",\"transformations\":[\"subject-pseudonymised\"]},\"source\":{\"application_id\":\"keen-agent\",\"application_version\":\"0.2.0\",\"component\":\"windows_user_policy\",\"instance_id\":\"4f1c9a2e-0000-4000-8000-000000000001\"},\"subject\":{\"identifier\":\"hmac-sha256:d5d35e7060e80f340fb53012043a6be3a5b3bb2808ee82796589517b089a18bc\",\"identifier_type\":\"pairwise\"},\"ueu_spec_version\":\"0.1-keen\"}",
+  "evidence_hash": "sha256:1ddb309bafecf996b7d152abb21b4e850e54e1a2751bed109a10fbe0497a980b",
+  "key_id": "4f1c9a2e-0000-4000-8000-000000000001:3097e2dee2cb4a34",
+  "manifest": "{\"context\":\"keen-ueu-batch-v1\",\"evidence\":[{\"evidence_hash\":\"sha256:1ddb309bafecf996b7d152abb21b4e850e54e1a2751bed109a10fbe0497a980b\",\"evidence_id\":\"0192c4e1-7a3e-7c41-9a8e-5b1d2f3c4a5b\"}],\"issued_at\":\"2026-10-27T06:43:38.095Z\",\"key_id\":\"4f1c9a2e-0000-4000-8000-000000000001:3097e2dee2cb4a34\",\"producer\":\"4f1c9a2e-0000-4000-8000-000000000001\"}",
+  "manifest_signature": "u7l97-0VPBXSDbQM2D7-Ae1bP4nbHy_nzDn3ypyUM1ohQ9G2RK8WPdR_lPUXqwe0Ea8FXDIgGF0il225X_OVCQ",
+  "public_key": "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI",
+  "request_body": "{\"version\":\"0.2.0\"}",
+  "seed_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+  "signature": "keen=:i7dRPRU1aGKZvR4hFmPkM81N8uQ9Sgn1Xp3+N8xuvXz3XGiV4+gXjOaZ28FAMNMkWOnqWbzYo6qbBQ99MbaNDg==:",
+  "signature_base": "\"@method\": POST\n\"keen-agent-operation\": heartbeat\n\"content-digest\": sha-256=:qoH2z7vo6UkbmOE6EO10HG8Bc1jwwRuLfAIxFzD9VzY=:\n\"content-type\": application/json\n\"@signature-params\": (\"@method\" \"keen-agent-operation\" \"content-digest\" \"content-type\");created=1793083418;keyid=\"4f1c9a2e-0000-4000-8000-000000000001:3097e2dee2cb4a34\";nonce=\"AAAAAAAAAAAAAAAAAAAAAA\";alg=\"ed25519\"",
+  "signature_input": "keen=(\"@method\" \"keen-agent-operation\" \"content-digest\" \"content-type\");created=1793083418;keyid=\"4f1c9a2e-0000-4000-8000-000000000001:3097e2dee2cb4a34\";nonce=\"AAAAAAAAAAAAAAAAAAAAAA\";alg=\"ed25519\"",
+  "subject_identifier": "hmac-sha256:d5d35e7060e80f340fb53012043a6be3a5b3bb2808ee82796589517b089a18bc",
+  "subject_key_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "subject_kind": "windows_sid",
+  "subject_value": "S-1-5-21-1-2-3-1001"
+}

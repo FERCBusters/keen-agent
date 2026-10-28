@@ -112,38 +112,40 @@ the named mechanism (e.g. guest block encryption); they are not universal claims
 The helper reports components independently rather than selecting one apparent
 winner when multiple tools coexist.
 
-## Wire format and KEEN mapping
+## Evidence and KEEN mapping
 
-Each observation is one ordinary OTLP log event through the existing durable
-queue.
+Each collector run writes its observations and a coverage record to the
+journal; the agent's `posture` source reads them, keeps only trusted collector
+units, and turns each measured setting (status `observed`) into a signed
+`endpoint.<check>.observed` envelope ([evidence format](evidence-format.md)).
+For example, a GNOME session's screen lock:
 
-Example event fields (all strings as in the existing protocol):
-
-```text
-action: posture.screen_lock
-outcome: info
-posture.schema_version: 1
-posture.check: screen_lock
-posture.provider: gnome
-posture.scope: session:2
-posture.status: observed
-posture.reason: effective_user_settings_queried
-posture.authority: user_session
-posture.subject_uid: 1000
-posture.observed_at: <journal timestamp, UTC>
-posture.lock_enabled: true
-posture.idle_seconds: 300
-posture.lock_delay_seconds: 0
-posture.automatic_lock_configured: true
+```json
+{
+  "event_type": "endpoint.screen_lock.observed",
+  "source": {"application_id": "keen-agent", "component": "gnome", "...": "..."},
+  "event": {"action": "observe", "object_type": "screen_lock", "outcome": "observed",
+            "reason_code": "effective_user_settings_queried"},
+  "subject": {"identifier_type": "pairwise", "identifier": "hmac-sha256:..."},
+  "observation": {"method": "linux_session_collector", "scope": "session:2", "valid_for_seconds": 86400,
+                  "facts": {"lock_enabled": true, "idle_seconds": 300, "lock_delay_seconds": 0,
+                            "total_idle_to_lock_seconds": 300, "automatic_lock_configured": true}}
+}
 ```
 
-Statuses: `observed`, `unknown`, `unsupported`, `error`, `not_detected`,
-`not_applicable`. `observed` means facts were collected, NOT that the check passed.
-In particular it includes explicitly disabled controls. There are no pass/fail
-statuses. `outcome=info` intentionally avoids treating data collection success as
-compliance. `posture.authority` and subject UID come from journal metadata; JSON
-cannot overwrite them. Invalid/untrusted records advance the checkpoint and
-increment the existing rejected counter instead of poisoning delivery.
+Facts carry the catalogue's types (booleans, integers, timestamps, strings).
+Settings that could not be measured are omitted, never defaulted, and
+observations with any other status (`unknown`, `unsupported`, `error`,
+`not_detected`, `not_applicable`) are not sent as evidence: the run's
+`evidence.collection.completed` record lists each check as observed or
+unavailable instead, so KEEN can tell "not measured" from "measured". The
+session collector's user ID comes from journal metadata and becomes a
+pseudonymous subject; JSON cannot overwrite it. Invalid or untrusted records
+advance the checkpoint and are counted as rejected instead of blocking
+delivery.
+
+`observed` means facts were collected, not that the check passed; KEEN judges
+the facts with its versioned rules and the organisation's targets.
 
 ## Security model
 

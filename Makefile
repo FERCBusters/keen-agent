@@ -1,5 +1,5 @@
 GO ?= go
-.PHONY: build test release clean
+.PHONY: build test version-check release clean
 build:
 	CGO_ENABLED=0 $(GO) build -buildvcs=false -trimpath -ldflags='-s -w' -o dist/keen-agent ./cmd/keen-agent
 	CGO_ENABLED=0 $(GO) build -buildvcs=false -trimpath -o dist/keen-setup-helper ./cmd/keen-setup-helper
@@ -7,6 +7,10 @@ build:
 test:
 	$(GO) test -race ./...
 	$(GO) vet ./...
+
+# VERSION, the Go constant and the setup app's package files must agree.
+version-check:
+	$(GO) test ./internal/buildinfo
 
 release: test
 	mkdir -p dist

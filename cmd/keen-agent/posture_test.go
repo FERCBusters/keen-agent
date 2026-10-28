@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"keen-agent/internal/posture"
-	"os"
+	"keen-agent/internal/posturemodel"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +22,7 @@ func postureEvent(check string, host bool) Event {
 	}
 	return e
 }
+
 func TestPostureAuthorityBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name, check string
@@ -38,6 +39,7 @@ func TestPostureAuthorityBoundaries(t *testing.T) {
 		{"trailing_json", "disk_encryption", true, func(e *Event) { e.Raw += " {}" }, false},
 		{"reserved_fact", "screen_lock", false, func(e *Event) { e.Raw = strings.Replace(e.Raw, `"enabled":"true"`, `"authority":"host_root"`, 1) }, false},
 		{"unknown_payload_field", "disk_encryption", true, func(e *Event) { e.Raw = strings.TrimSuffix(e.Raw, "}") + `,"uid":0}` }, false},
+		{"unmeasured", "disk_encryption", true, func(e *Event) { e.Raw = strings.Replace(e.Raw, `"observed"`, `"unknown"`, 1) }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := postureEvent(tc.check, tc.host)
@@ -48,38 +50,80 @@ func TestPostureAuthorityBoundaries(t *testing.T) {
 			if (err == nil) != tc.want {
 				t.Fatalf("error=%v event=%+v", err, e)
 			}
-			if err == nil {
-				if e.Outcome != "info" || e.Fields["posture.status"] != "observed" {
-					t.Fatal(e)
-				}
-				if e.Fields["posture.subject_uid"] != e.Actor {
-					t.Fatal(e)
-				}
+			if err == nil && (e.Posture == nil || e.Posture.Check != tc.check) {
+				t.Fatal(e)
 			}
 		})
 	}
 }
-func TestPostureOTLPUsesExistingFields(t *testing.T) {
+
+func TestSessionObservationBecomesPseudonymousEvidence(t *testing.T) {
+	z := sealerFor(t, "events", "events")
 	e := postureEvent("screen_lock", false)
-	e.ID = uuid()
 	if err := normalizePosture(&e); err != nil {
 		t.Fatal(err)
 	}
-	payload := string(otlp([]Event{e}))
-	for _, v := range []string{"keen.field.posture.authority", "user_session", "keen.field.posture.observed_at", "posture.screen_lock"} {
-		if !strings.Contains(payload, v) {
-			t.Fatal(payload)
-		}
+	envs, err := z.envelopes(Source{Name: "posture", Parser: "posture"}, e)
+	if err != nil || len(envs) != 1 {
+		t.Fatal(envs, err)
+	}
+	env := envs[0]
+	observation := env["observation"].(map[string]any)
+	if env["event_type"] != "endpoint.screen_lock.observed" || observation["method"] != "linux_session_collector" || observation["facts"].(map[string]any)["enabled"] != "true" {
+		t.Fatal(env)
+	}
+	if env["subject"].(map[string]any)["identifier_type"] != "pairwise" || strings.Contains(canonical(t, env), `"1000"`) {
+		t.Fatal("session UID not pseudonymised")
+	}
+	host := postureEvent("disk_encryption", true)
+	normalizePosture(&host)
+	envs, _ = z.envelopes(Source{Name: "posture", Parser: "posture"}, host)
+	if _, ok := envs[0]["subject"]; ok || envs[0]["observation"].(map[string]any)["method"] != "linux_host_collector" {
+		t.Fatal(envs[0])
 	}
 }
+
+func TestCoverageLineBecomesCollectionRecord(t *testing.T) {
+	z := sealerFor(t, "events", "events")
+	all := []posture.Observation{
+		{Version: 1, Check: "firewall", Provider: "ufw", Scope: "host", Status: "observed", Reason: "x", Facts: map[string]string{}},
+		{Version: 1, Check: "antivirus", Provider: "clamav", Scope: "host", Status: "unknown", Reason: "query_unavailable", Facts: map[string]string{}},
+	}
+	c := posturemodel.CoverageOf("posture_host", "run_1", all)
+	b, _ := json.Marshal(c)
+	e := postureEvent("disk_encryption", true)
+	e.Raw = string(b)
+	if err := normalizePosture(&e); err != nil || e.Coverage == nil {
+		t.Fatal(err)
+	}
+	envs, err := z.envelopes(Source{Name: "posture", Parser: "posture"}, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := envs[0]["attributes"].(map[string]any)
+	got, _ := json.Marshal([]any{a["checks_attempted"], a["checks_observed"], a["checks_unavailable"], a["probes_unavailable"], a["checks_observed_count"]})
+	if envs[0]["event_type"] != "evidence.collection.completed" || string(got) != `[["antivirus","firewall"],["firewall"],["antivirus"],["antivirus/clamav"],1]` {
+		t.Fatal(string(got))
+	}
+	// A desktop session cannot speak for the host collector.
+	session := postureEvent("screen_lock", false)
+	session.Raw = string(b)
+	if normalizePosture(&session) == nil {
+		t.Fatal("session reported host coverage")
+	}
+}
+
 func FuzzPostureJournal(f *testing.F) {
 	f.Add(postureEvent("screen_lock", false).Raw)
 	f.Fuzz(func(t *testing.T, raw string) {
 		e := postureEvent("screen_lock", false)
 		e.Raw = raw
 		err := normalizePosture(&e)
-		if err == nil && (e.Action != "posture.screen_lock" || e.Fields["posture.authority"] != "user_session") {
+		if err == nil && (e.Authority != "user_session" || (e.Posture == nil) == (e.Coverage == nil)) {
 			t.Fatal(e)
+		}
+		if err == nil && e.Posture != nil && e.Posture.Check != "screen_lock" {
+			t.Fatal("session attested host posture")
 		}
 	})
 }
@@ -95,27 +139,22 @@ func TestPostureConfigRejectsFileAndCustomUnits(t *testing.T) {
 		{"paths", "kind: journal\n    parser: posture\n    paths: [/var/log/posture.json]", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := t.TempDir() + "/config.yaml"
-			raw := "endpoint: https://keen.example/api/v1/otlp/logs\ntoken_file: /etc/keen-agent/token\nsources:\n  - name: posture\n    " + tc.source + "\n"
-			if e := os.WriteFile(p, []byte(raw), 0600); e != nil {
-				t.Fatal(e)
-			}
-			_, e := config(p)
+			_, e := config(writeConfig(t, testConfig+"  - name: posture\n    "+tc.source+"\n"))
 			if (e == nil) != tc.valid {
 				t.Fatal(e)
 			}
 		})
 	}
 }
+
 func TestHostQubesContext(t *testing.T) {
 	e := postureEvent("screen_lock", true)
-	o := posture.QubesContext("session")
-	b, _ := json.Marshal(o)
+	b, _ := json.Marshal(posture.QubesContext("session"))
 	e.Raw = string(b)
 	if err := normalizePosture(&e); err != nil {
 		t.Fatal(err)
 	}
-	if e.Fields["posture.control_location"] != "qubes_gui_domain" || e.Fields["posture.enabled"] != "" {
-		t.Fatal(e)
+	if e.Posture.Facts["control_location"] != "qubes_gui_domain" || e.Posture.Facts["enabled"] != "" {
+		t.Fatal(e.Posture)
 	}
 }

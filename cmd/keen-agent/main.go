@@ -1,20 +1,27 @@
 package main
 
 import (
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"keen-agent/internal/buildinfo"
 	"log"
 	"math/rand/v2"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
+
+	"keen-agent/internal/agentauth"
 )
 
-const version = "0.1.10"
+var version = buildinfo.Version
 
 func main() {
 	if err := run(); err != nil {
@@ -24,7 +31,7 @@ func main() {
 }
 func run() error {
 	path := flag.String("config", "/etc/keen-agent/config.yaml", "configuration file")
-	command := flag.String("command", "run", "run, check, status, retry-credentials, purge-queue, posture-host, posture-session or version")
+	command := flag.String("command", "run", "run, enroll, check, status, key, retry-credentials, purge-queue, posture-host, posture-session or version")
 	confirmPurge := flag.Bool("confirm-discard", false, "confirm permanent deletion of queued, undelivered events")
 	diagnostics := flag.Bool("posture-diagnostics", false, "include unavailable providers in posture preview")
 	flag.Parse()
@@ -39,18 +46,30 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	if *command == "check" {
-		e = checkCredentialConfig(c)
-		if e != nil {
+	switch *command {
+	case "check":
+		if e = checkCredentialConfig(c); e != nil {
 			return e
 		}
-		_, e = client(c)
-		if e == nil {
+		if _, e = client(c); e == nil {
 			fmt.Println("Configuration is valid")
 		}
 		return e
-	}
-	if *command == "status" {
+	case "key":
+		// The key ID and public key, as a reviewer pins them when checking a
+		// verification bundle: ueu_verify_bundle.py --key KEY_ID=PUBLIC_KEY.
+		identity, err := identityStore(c).Load()
+		if err != nil || !identity.Enrolled() {
+			return errors.New("not enrolled")
+		}
+		private, err := identity.Key()
+		if err != nil {
+			return err
+		}
+		public := private.Public().(ed25519.PublicKey)
+		fmt.Println(identity.KeyID + "=" + base64.RawURLEncoding.EncodeToString(public))
+		return nil
+	case "status":
 		b, err := os.ReadFile(c.StateDir + "/status.json")
 		if err != nil {
 			return err
@@ -63,43 +82,70 @@ func run() error {
 		return e
 	}
 	defer sp.db.Close()
-	if *command == "purge-queue" {
+	h, e := client(c)
+	if e != nil {
+		return e
+	}
+	defer h.CloseIdleConnections()
+	manager, e := openManager(c, sp, h)
+	if e != nil {
+		return e
+	}
+	switch *command {
+	case "enroll":
+		if manager.Identity().Enrolled() {
+			fmt.Println("Already enrolled as agent " + manager.Identity().AgentID)
+			return nil
+		}
+		ready, err := manager.Ready(context.Background(), time.Now())
+		if !ready {
+			if err == nil {
+				err = errors.New("enrolment did not complete; retry later")
+			}
+			return err
+		}
+		fmt.Println("Enrolled as agent " + manager.Identity().AgentID + "; start the service to begin collection")
+		return nil
+	case "purge-queue":
 		if !*confirmPurge {
 			return errors.New("purge-queue requires -confirm-discard; stop the service first")
 		}
-		n, err := sp.purgeQueue()
+		if id := manager.Identity(); id.Enrolled() {
+			if sp.sealer, e = newSealer(c, id); e != nil {
+				return e
+			}
+		}
+		d, err := sp.purgeQueue()
 		if err != nil {
+			return err
+		}
+		if err = sp.recordDiscard(d); err != nil {
 			return err
 		}
 		// Do not leave the pre-purge queue count visible in status.
 		if err := os.Remove(c.StateDir + "/status.json"); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		fmt.Printf("Discarded %d queued events; collection checkpoints preserved. Restart the service to refresh status.\n", n)
+		fmt.Printf("Discarded %d queued records; KEEN receives a signed record of the discard. Restart the service to refresh status.\n", d.count)
 		return nil
-	}
-    if *command == "retry-credentials" {
-        if c.Enrollment == nil { return errors.New("retry-credentials requires enrollment configuration") }
-        state, err := loadIdentity(c)
-        if err != nil { return err }
-        state.Blocked=""; state.Failures=0; state.NextAttempt=time.Time{}
-        if err = saveIdentity(c,state); err != nil { return err }
-        fmt.Println("Credential retry enabled for the existing identity/attempt. Restart the service; revoked or expired credentials still require administrator action.")
-        return nil
-    }
-	if *command != "run" {
+	case "retry-credentials":
+		if err := manager.Unblock(); err != nil {
+			return err
+		}
+		fmt.Println("Credential retry enabled for the saved identity. Restart the service; revoked or expired keys still need a new enrolment code.")
+		return nil
+	case "run":
+	default:
 		return errors.New("unknown command")
 	}
-	h, e := client(c)
-	if e != nil {
-		return e
-	}
-    defer h.CloseIdleConnections()
-    manager, e := newCredentialManager(c, sp)
-    if e != nil { return e }
+	return loop(c, sp, h, manager)
+}
+
+func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(signals)
+	var e error
 	nextSend := time.Time{}
 	started := time.Now()
 	var delivered, deliveredBatches int64
@@ -114,13 +160,34 @@ func run() error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
-		if time.Now().After(nextExpire) {
-			nextExpire = time.Now().Add(time.Minute)
-			if e = sp.expire(c.RetentionDays); e != nil {
+		ready, credentialErr := manager.Ready(context.Background(), time.Now())
+		if credentialErr != nil {
+			if persistenceFailure(credentialErr) {
+				return credentialErr
+			}
+			log.Printf("credentials: %s", credentialErr)
+		}
+		id := manager.Identity()
+		if id.Blocked != "" {
+			blocked = true
+		}
+		if id.Enrolled() && (sp.sealer == nil || sp.sealer.producer.InstanceID != id.AgentID || sp.sealer.ceiling != id.EvidenceCeiling()) {
+			if sp.sealer, e = newSealer(c, id); e != nil {
 				return e
 			}
 		}
-		if time.Now().After(nextCollect) {
+		if sp.sealer != nil && time.Now().After(nextExpire) {
+			nextExpire = time.Now().Add(time.Minute)
+			d, err := sp.expire(c.RetentionDays)
+			if err == nil {
+				err = sp.recordDiscard(d)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		// Nothing is collected before enrolment: evidence is sealed with this agent's identity.
+		if sp.sealer != nil && time.Now().After(nextCollect) {
 			nextCollect = time.Now().Add(time.Duration(c.PollSeconds) * time.Second)
 			for _, source := range c.Sources {
 				err := collect(c, source, sp)
@@ -137,17 +204,10 @@ func run() error {
 				status[source.Name] = message
 			}
 		}
-        credentialsReady := true
-        if manager != nil {
-            var credentialErr error
-            credentialsReady, credentialErr = manager.maintain(h,time.Now())
-            if credentialErr != nil { if persistenceFailure(credentialErr) { return credentialErr }; log.Printf("credentials: %s",credentialErr) }
-            if manager.state.Blocked != "" { blocked = true }
-        }
-        drain := false
-        if credentialsReady && !blocked && time.Now().After(nextSend) {
+		drain := false
+		if ready && !blocked && time.Now().After(nextSend) {
 			before, _, _ := sp.stats()
-			e = send(c, sp, h)
+			e = send(c, sp, h, id)
 			if e == nil {
 				failures = 0
 				after, _, _ := sp.stats()
@@ -169,11 +229,13 @@ func run() error {
 				if errors.As(e, &de) {
 					delay = max(delay, de.retry)
 					if de.status >= 400 && de.status < 500 && de.status != 408 && de.status != 429 {
-                        blocked = true
-                        if manager != nil && (de.status == 401 || de.status == 403) {
-                            if err := manager.block("agent authentication rejected; administrator intervention required"); err != nil { if persistenceFailure(err) { return err }; log.Printf("credentials: %s",err) }
-                        }
-                    }
+						blocked = true
+						if de.status == 401 || de.status == 403 {
+							if err := manager.Block("agent authentication rejected; administrator intervention required"); persistenceFailure(err) {
+								return err
+							}
+						}
+					}
 				}
 				if strings.Contains(e.Error(), "partial success") {
 					blocked = true
@@ -183,11 +245,22 @@ func run() error {
 			}
 		}
 		n, b, r := sp.stats()
-		health := map[string]any{"version": version, "queued": n, "queue_bytes": b, "rejected": r, "sources": status, "delivery_blocked": blocked || !credentialsReady, "updated_at": time.Now().UTC()}
-		health["filtered_by_source"] = sp.filteredStats(c.Sources)
-		health["delivered_since_start"] = delivered
-		health["delivery_batches_since_start"] = deliveredBatches
-		health["delivery_events_per_second_since_start"] = float64(delivered) / time.Since(started).Seconds()
+		modes, clamped := map[string]string{}, false
+		if sp.sealer != nil {
+			for _, source := range c.Sources {
+				m, limited := sp.sealer.mode(source)
+				modes[source.Name] = string(m)
+				clamped = clamped || limited
+			}
+		}
+		health := map[string]any{
+			"version": version, "queued": n, "queue_bytes": b, "rejected": r, "sources": status,
+			"delivery_blocked": blocked || !ready, "updated_at": time.Now().UTC(),
+			"filtered_by_source": sp.filteredStats(c.Sources), "not_evidence_by_source": sp.notEvidenceStats(c.Sources),
+			"delivered_since_start": delivered, "delivery_batches_since_start": deliveredBatches,
+			"delivery_events_per_second_since_start": float64(delivered) / time.Since(started).Seconds(),
+			"chain_sequence":                         sp.chainPosition(), "evidence_modes": modes, "evidence_mode_clamped": clamped,
+		}
 		if !lastDelivery.IsZero() {
 			health["last_delivery_at"] = lastDelivery
 		}
@@ -195,29 +268,27 @@ func run() error {
 			log.Printf("delivery progress: delivered=%d batches=%d queued=%d bytes=%d", delivered, deliveredBatches, n, b)
 			nextReport = time.Now().Add(time.Minute)
 		}
-		if credentialsReady && (manager == nil || manager.state.Blocked == "") && time.Now().After(nextHealth) {
+		if ready && id.Blocked == "" && time.Now().After(nextHealth) {
 			nextHealth = time.Now().Add(time.Minute)
-			if err := heartbeat(c, h, health); err != nil {
-                log.Printf("health: %s", err)
-                var de deliveryError
-                if manager != nil && errors.As(err,&de) && (de.status==401 || de.status==403) {
-                    blocked=true
-                    if err := manager.block("agent authentication rejected; administrator intervention required"); err != nil { if persistenceFailure(err) { return err }; log.Printf("credentials: %s",err) }
-                }
+			if err := heartbeat(c, h, id, health); err != nil {
+				log.Printf("health: %s", err)
+				var de deliveryError
+				if errors.As(err, &de) && (de.status == 401 || de.status == 403) {
+					blocked = true
+					if err := manager.Block("agent authentication rejected; administrator intervention required"); persistenceFailure(err) {
+						return err
+					}
+				}
 			}
 		}
-        health["delivery_blocked"] = blocked || !credentialsReady
-        // Enrollment diagnostics are local only; keep the receiver's strict
-        // heartbeat schema unchanged and never serialize the private identity.
-        if manager != nil {
-            health["enrollment_profile_id"] = manager.state.ProfileID
-            health["agent_id"] = manager.state.AgentID
-            health["credential_expires_at"] = manager.state.ExpiresAt
-            health["credential_blocked_reason"] = manager.state.Blocked
-            health["credential_ready"] = credentialsReady && manager.state.Blocked == ""
-            health["credential_next_attempt"] = manager.state.NextAttempt
-        }
-        encoded, _ := json.MarshalIndent(health, "", "  ")
+		// Identity diagnostics are local only; the private key is never serialised.
+		health["agent_id"] = id.AgentID
+		health["key_id"] = id.KeyID
+		health["credential_expires_at"] = id.ExpiresAt
+		health["credential_blocked_reason"] = id.Blocked
+		health["credential_ready"] = ready && id.Blocked == ""
+		health["credential_next_attempt"] = id.NextAttempt
+		encoded, _ := json.MarshalIndent(health, "", "  ")
 		tmp := c.StateDir + "/status.json.tmp"
 		if e = os.WriteFile(tmp, encoded, 0600); e != nil {
 			return e

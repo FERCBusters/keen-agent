@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"keen-agent/internal/buildinfo"
 	model "keen-agent/internal/posturemodel"
 	"os/exec"
 	"runtime"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = "0.1.10"
+const Version = buildinfo.Version
 
 type Observation = model.Observation
 type Report struct {

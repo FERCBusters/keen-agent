@@ -4,6 +4,7 @@ package nativeposture
 
 import (
 	"errors"
+	"keen-agent/internal/agentauth"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -33,3 +34,6 @@ func privatePath(path string, dir bool) error {
 	}
 	return nil
 }
+
+// identityStore keeps the identity in the companion's root-owned state directory.
+func identityStore(dir string) agentauth.FileStore { return agentauth.FileStore{Dir: dir} }

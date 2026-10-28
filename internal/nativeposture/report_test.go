@@ -1,17 +1,20 @@
 package nativeposture
 
 import (
-	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	bolt "go.etcd.io/bbolt"
 	"io"
+	"keen-agent/internal/agentauth"
+	"keen-agent/internal/ueu"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRunner map[string]string
@@ -76,103 +79,92 @@ func TestDecodeStrict(t *testing.T) {
 		t.Fatal("accepted forged authority")
 	}
 }
-func TestQuietReportAndPayload(t *testing.T) {
-	r := NewReport([]Observation{unavailable("antivirus", "missing"), observed("firewall", "windows_firewall", "Public", "state_observed", map[string]string{"enabled": "false"})}, true)
-	if len(r.Observations) != 1 || len(r.Diagnostics) != 1 {
-		t.Fatal(r)
+func TestRunEnvelopesAndCoverage(t *testing.T) {
+	all := []Observation{
+		unavailable("antivirus", "missing"),
+		observed("firewall", "windows_firewall", "Public", "state_observed", map[string]string{"enabled": "false"}),
+		observed("screen_lock", "windows_user_policy", "S-1-5-21-1-2-3-1001", "user_lock_settings_observed", map[string]string{"automatic_lock_configured": "true"}),
 	}
-	b, e := Payload(r)
-	if e != nil {
-		t.Fatal(e)
+	envs, err := Preview(all)
+	if err != nil || len(envs) != 3 {
+		t.Fatal(envs, err)
 	}
-	s := string(b)
-	for _, v := range []string{"keen.event.id", "posture.firewall", "native_collector", "false"} {
-		if !strings.Contains(s, v) {
-			t.Fatal(s)
-		}
+	if envs[0]["event_type"] != "endpoint.firewall.observed" || envs[0]["observation"].(map[string]any)["facts"].(map[string]any)["enabled"] != false {
+		t.Fatal(envs[0])
 	}
-	if strings.Contains(s, "missing") {
-		t.Fatal("diagnostics leaked")
+	b, _ := ueu.Canonical(envs[1])
+	if envs[1]["observation"].(map[string]any)["scope"] != "user" || strings.Contains(string(b), "S-1-5-21") {
+		t.Fatal("account identifier sent")
+	}
+	coverage := envs[2]["attributes"].(map[string]any)
+	got, _ := json.Marshal([]any{coverage["checks_unavailable"], coverage["probes_unavailable"]})
+	if envs[2]["event_type"] != "evidence.collection.completed" || string(got) != `[["antivirus"],["antivirus/missing"]]` {
+		t.Fatal(string(got))
 	}
 }
 func TestAcknowledgement(t *testing.T) {
-	for _, tc := range []struct {
-		body   string
-		status int
-		ok     bool
-	}{{`{}`, 200, true}, {`{"partialSuccess":{"rejectedLogRecords":"0"}}`, 200, true}, {`{"partialSuccess":{"rejectedLogRecords":"1"}}`, 200, false}, {`null`, 200, false}, {``, 200, false}, {`not json`, 200, false}, {`{}`, 401, false}, {`{"partialSuccess":{"errorMessage":"error"}}`, 200, false}} {
-		t.Run(tc.body+string(rune(tc.status)), func(t *testing.T) {
-			s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer test-token" {
-					t.Error("token missing")
-				}
-				w.WriteHeader(tc.status)
-				w.Write([]byte(tc.body))
-			}))
-			defer s.Close()
-			e := post(context.Background(), s.Client(), s.URL, "test-token", []byte(`{}`))
-			if (e == nil) != tc.ok {
-				t.Fatalf("%v", e)
-			}
-		})
+	for body, ok := range map[string]bool{`{}`: true, `{"partialSuccess":{"rejectedLogRecords":"0"}}`: true, `{"partialSuccess":{"rejectedLogRecords":"1"}}`: false, `null`: false, ``: false, `not json`: false, `{"partialSuccess":{"errorMessage":"error"}}`: false} {
+		if (checkAck([]byte(body)) == nil) != ok {
+			t.Fatal(body)
+		}
 	}
 }
 
-func TestQueuePartialAckAndRetry(t *testing.T) {
+func TestQueueSignsRetriesAndAcknowledges(t *testing.T) {
+	id, _ := agentauth.New("")
+	priv, _ := id.Key()
+	pub := priv.Public().(ed25519.PublicKey)
+	id.AgentID, id.KeyID = "6f8459a2-2768-41a4-94d5-a0cdcc2d7187", ueu.KeyID("6f8459a2-2768-41a4-94d5-a0cdcc2d7187", pub)
+	id.ExpiresAt, id.SubjectType, id.Ceiling = time.Now().Add(time.Hour), "pairwise", "events"
 	db, e := bolt.Open(filepath.Join(t.TempDir(), "queue.db"), 0600, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
 	defer db.Close()
-	first := []byte(`{"report":1}`)
-	second := []byte(`{"report":2}`)
-	if e = db.Update(func(tx *bolt.Tx) error {
-		b, e := tx.CreateBucket([]byte("pending"))
-		if e != nil {
-			return e
-		}
-		if e = b.Put([]byte("1"), first); e != nil {
-			return e
-		}
-		return b.Put([]byte("2"), second)
-	}); e != nil {
+	pr, _ := producer(id)
+	envs, _ := Envelopes(pr, []Observation{observed("firewall", "pf", "host", "x", map[string]string{"enabled": "true"})}, time.Now())
+	if e = seal(db, id.AgentID, envs); e != nil {
 		t.Fatal(e)
 	}
 	fail := true
 	var seen []string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		if _, err := ueu.VerifyRequest(r.Header, "POST", ueu.OperationLogs, b, func(string) (ed25519.PublicKey, error) { return pub, nil }, time.Now()); err != nil {
+			t.Error(err)
+		}
 		seen = append(seen, string(b))
-		if fail && string(b) == string(second) {
+		if fail {
 			w.WriteHeader(503)
 			return
 		}
 		w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
-	if e = flushQueue(context.Background(), db, server.Client(), server.URL, "test-token"); e == nil {
+	endpoint := server.URL + "/api/v1/otlp/logs"
+	if e = flushQueue(context.Background(), db, server.Client(), endpoint, id); e == nil {
 		t.Fatal("expected failure")
 	}
-	db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("pending"))
-		if b.Get([]byte("1")) != nil || !bytes.Equal(b.Get([]byte("2")), second) {
-			t.Fatal("acknowledged batch not committed or failed batch lost")
-		}
-		return nil
-	})
+	_, batch, _ := pending(db)
+	if len(batch) != 2 {
+		t.Fatal("failed delivery lost evidence")
+	}
 	fail = false
-	if e = flushQueue(context.Background(), db, server.Client(), server.URL, "test-token"); e != nil {
+	if e = flushQueue(context.Background(), db, server.Client(), endpoint, id); e != nil {
 		t.Fatal(e)
 	}
-	if len(seen) != 3 || seen[1] != seen[2] {
-		t.Fatal("retry changed payload", seen)
+	if _, batch, _ = pending(db); len(batch) != 0 || len(seen) != 2 {
+		t.Fatal("queue not drained")
 	}
-	db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket([]byte("pending")).Stats().KeyN != 0 {
-			t.Fatal("queue not drained")
+	for _, s := range []string{seen[0], seen[1]} {
+		if !strings.Contains(s, batch0(t, envs)) {
+			t.Fatal("retry changed the evidence")
 		}
-		return nil
-	})
+	}
+}
+
+func batch0(t *testing.T, envs []map[string]any) string {
+	return envs[0]["evidence_id"].(string)
 }
 
 func TestPowerCapabilitiesPrelude(t *testing.T) {

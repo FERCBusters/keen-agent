@@ -114,8 +114,8 @@ async function provision(request) {
     }
     return { ok: true };
   } finally {
-    // No token is stored by Electron after this operation. Remove on success/failure/cancel.
-    request.token = "";
+    // No code is stored by Electron after this operation. Remove on success/failure/cancel.
+    request.code = "";
     if (dir) await fs.rm(dir, { recursive: true, force: true });
   }
 }

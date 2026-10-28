@@ -22,9 +22,6 @@ func TestOSSECLegacyAndModern(t *testing.T) {
 	if modern.Action != "auth.login" || modern.Outcome != "success" || modern.Fields["source.ip"] != "2001:db8::2" || modern.Fields["ossec.manager.name"] != "manager.example" || modern.Fields["ossec.data.custom.result"] != "allowed" || modern.Timestamp.Format(time.RFC3339Nano) != "2026-10-06T23:00:00.123Z" {
 		t.Fatal(modern)
 	}
-	if !strings.Contains(string(otlp([]Event{modern})), `keen.field.ossec.rule.id`) {
-		t.Fatal("OSSEC fields missing on wire")
-	}
 }
 func TestOSSECIntegrityAndUnknownOutcomes(t *testing.T) {
 	for _, root := range []string{"syscheck", "SyscheckFile"} {
@@ -138,10 +135,10 @@ func TestOSSECCollectionRotationAndRedactedSpool(t *testing.T) {
 		t.Fatal(err)
 	}
 	batch, _ := sp.batch()
-	if len(batch) != 1 || strings.Contains(batch[0].Raw, "alice") || batch[0].Actor != "[REDACTED]" {
+	if len(batch) != 1 || strings.Contains(batch[0].Canonical, "alice") || payload(t, batch[0]) == "" {
 		t.Fatal(batch)
 	}
-	id := batch[0].ID
+	id := batch[0].EvidenceID
 	second := filepath.Join(root, "second.json")
 	os.WriteFile(second, []byte(ossecLegacy+"\n"), 0600)
 	os.Remove(active)
@@ -150,14 +147,14 @@ func TestOSSECCollectionRotationAndRedactedSpool(t *testing.T) {
 		t.Fatal(err)
 	}
 	batch, _ = sp.batch()
-	if len(batch) != 2 || batch[0].ID != id {
+	if len(batch) != 2 || batch[0].EvidenceID != id {
 		t.Fatal("rotation or stable retry identity failed")
 	}
 }
 
 func TestOSSECConfigAndLegacyTime(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	text := "endpoint: https://keen.example/api/v1/otlp/logs\ntoken_file: /etc/keen-agent/token\nsources:\n  - name: ossec\n    kind: file\n    parser: ossec\n    paths: [/var/ossec/logs/alerts/alerts.json]\n"
+	text := "endpoint: https://keen.example/api/v1/otlp/logs\nenrollment:\n  code_file: /etc/keen-agent/enrollment-code\nsources:\n  - name: ossec\n    kind: file\n    parser: ossec\n    paths: [/var/ossec/logs/alerts/alerts.json]\n"
 	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
 		t.Fatal(err)
 	}

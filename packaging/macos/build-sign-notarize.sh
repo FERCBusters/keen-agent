@@ -10,6 +10,9 @@ fi
 [[ $(uname -s) == Darwin ]] || { echo 'Build on macOS' >&2; exit 1; }
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$repo"
+# VERSION is the single source of the release version.
+version=$(cat VERSION)
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid VERSION: $version" >&2; exit 1; }
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 out="$repo/dist/macos"
@@ -43,17 +46,17 @@ cp packaging/macos/net.keen.posture.plist "$work/root/Library/LaunchDaemons/"
 cp packaging/macos/postinstall "$work/scripts/postinstall"
 chmod 755 "$work/scripts/postinstall"
 chmod 644 "$work/root/Library/LaunchDaemons/net.keen.posture.plist"
-pkgbuild --root "$work/root" --scripts "$work/scripts" --identifier net.keen.posture --version 0.1.10 --install-location / "$work/unsigned.pkg"
+pkgbuild --root "$work/root" --scripts "$work/scripts" --identifier net.keen.posture --version "$version" --install-location / "$work/unsigned.pkg"
 if [[ "$unsigned" == 1 ]]; then
- cp "$work/unsigned.pkg" "$out/keen-posture-0.1.10-unsigned.pkg"
- echo "$out/keen-posture-0.1.10-unsigned.pkg"
+ cp "$work/unsigned.pkg" "$out/keen-posture-$version-macos-universal-unsigned.pkg"
+ echo "$out/keen-posture-$version-macos-universal-unsigned.pkg"
  exit 0
 fi
-productsign --sign "$INSTALLER_IDENTITY" --timestamp "$work/unsigned.pkg" "$out/keen-posture-0.1.10.pkg"
-xcrun notarytool submit "$out/keen-posture-0.1.10.pkg" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$work/notary.json"
+productsign --sign "$INSTALLER_IDENTITY" --timestamp "$work/unsigned.pkg" "$out/keen-posture-$version-macos-universal.pkg"
+xcrun notarytool submit "$out/keen-posture-$version-macos-universal.pkg" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$work/notary.json"
 [[ $(plutil -extract status raw -o - "$work/notary.json") == Accepted ]] || { cat "$work/notary.json"; exit 1; }
-xcrun stapler staple "$out/keen-posture-0.1.10.pkg"
-xcrun stapler validate "$out/keen-posture-0.1.10.pkg"
-pkgutil --check-signature "$out/keen-posture-0.1.10.pkg"
-spctl --assess --type install --verbose=2 "$out/keen-posture-0.1.10.pkg"
-echo "$out/keen-posture-0.1.10.pkg"
+xcrun stapler staple "$out/keen-posture-$version-macos-universal.pkg"
+xcrun stapler validate "$out/keen-posture-$version-macos-universal.pkg"
+pkgutil --check-signature "$out/keen-posture-$version-macos-universal.pkg"
+spctl --assess --type install --verbose=2 "$out/keen-posture-$version-macos-universal.pkg"
+echo "$out/keen-posture-$version-macos-universal.pkg"

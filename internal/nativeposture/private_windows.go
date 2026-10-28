@@ -3,6 +3,7 @@ package nativeposture
 import (
 	"errors"
 	"golang.org/x/sys/windows"
+	"keen-agent/internal/agentauth"
 	"os"
 	"path/filepath"
 	"unsafe"
@@ -135,3 +136,11 @@ func CheckTrustedAncestors(path string) error {
 		}
 	}
 }
+
+// identityStore keeps the identity in the Administrators/SYSTEM-only state directory.
+func identityStore(dir string) agentauth.FileStore {
+	return agentauth.FileStore{Dir: dir, Check: privatePath}
+}
+
+// PrivatePath exposes the protected-path check to the setup helper.
+func PrivatePath(path string, dir bool) error { return privatePath(path, dir) }

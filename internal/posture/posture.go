@@ -242,7 +242,9 @@ func failed(o Observation, reason string) Observation {
 	o.Reason = reason
 	return o
 }
-func Emit(w io.Writer, observations []Observation) error {
+
+// Emit writes one JSON line per observation, then the run's coverage line.
+func Emit(w io.Writer, observations []Observation, coverage posturemodel.Coverage) error {
 	enc := json.NewEncoder(w)
 	for _, o := range observations {
 		if e := o.Validate(); e != nil {
@@ -252,7 +254,10 @@ func Emit(w io.Writer, observations []Observation) error {
 			return e
 		}
 	}
-	return nil
+	if e := coverage.Validate(); e != nil {
+		return e
+	}
+	return enc.Encode(coverage)
 }
 func Host(ctx context.Context, s System) []Observation {
 	var all []Observation

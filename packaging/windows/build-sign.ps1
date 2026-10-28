@@ -22,6 +22,9 @@ function Sign([string]$File) {
   Checked $SignTool @('verify','/pa','/all','/v',$File)
 }
 $repo=Resolve-Path "$PSScriptRoot\..\.."
+# VERSION is the single source of the release version.
+$version=(Get-Content -LiteralPath (Join-Path $repo 'VERSION') -Raw).Trim()
+if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid VERSION: $version" }
 $oldSetupPlatform=$env:SETUP_PLATFORM; $oldSetupArch=$env:SETUP_ARCH
 $oldOS=$env:GOOS; $oldArch=$env:GOARCH; $oldCGO=$env:CGO_ENABLED
 Push-Location $repo
@@ -29,7 +32,7 @@ try {
   $out=Join-Path $repo "dist\windows-$Architecture"
   New-Item -ItemType Directory -Force $out | Out-Null
   $exe=Join-Path $out 'keen-posture.exe'
-  $msi=Join-Path $out 'keen-posture-0.1.10.msi'
+  $msi=Join-Path $out "keen-posture-$version-windows-$Architecture.msi"
   $env:GOOS='windows'; $env:GOARCH=$Architecture; $env:CGO_ENABLED='0'
   Checked 'go' @('build','-trimpath','-o',$exe,'./cmd/keen-posture')
   Sign $exe
@@ -46,7 +49,7 @@ try {
   $fragment=Join-Path $out 'SetupFiles.wxs'
   Checked 'node' @('onboarding/wix-files.cjs',$setup,$fragment)
   $wixArch=if($Architecture -eq 'amd64'){'x64'}else{'arm64'}
-  Checked $Wix @('build',"$PSScriptRoot\Product.wxs",$fragment,'-arch',$wixArch,'-d',"Binary=$exe",'-d',"SetupHelper=$helper",'-o',$msi)
+  Checked $Wix @('build',"$PSScriptRoot\Product.wxs",$fragment,'-arch',$wixArch,'-d',"Binary=$exe",'-d',"SetupHelper=$helper",'-d',"Version=$version",'-o',$msi)
   Sign $msi
   Get-FileHash -Algorithm SHA256 $exe,$msi
 } finally { $env:SETUP_PLATFORM=$oldSetupPlatform; $env:SETUP_ARCH=$oldSetupArch; $env:GOOS=$oldOS; $env:GOARCH=$oldArch; $env:CGO_ENABLED=$oldCGO; Pop-Location }

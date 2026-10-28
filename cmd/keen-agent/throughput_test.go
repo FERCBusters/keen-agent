@@ -8,7 +8,8 @@ func TestBatchAckLeavesBacklog(t *testing.T) {
 	for i := range events {
 		events[i] = event()
 	}
-	if err := s.add(events, "test", Checkpoint{}); err != nil {
+	s.limit = 64 << 20
+	if err := s.add(envelopesFor(t, s, rawSource, events...), "test", Checkpoint{}); err != nil {
 		t.Fatal(err)
 	}
 	batch, err := s.batch()
@@ -17,7 +18,7 @@ func TestBatchAckLeavesBacklog(t *testing.T) {
 	}
 	ids := map[string]bool{}
 	for _, e := range batch {
-		ids[e.ID] = true
+		ids[e.EvidenceID] = true
 	}
 	if err = s.ack(ids); err != nil {
 		t.Fatal(err)
@@ -31,7 +32,7 @@ func TestBatchAckLeavesBacklog(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range next {
-		if ids[e.ID] {
+		if ids[e.EvidenceID] {
 			t.Fatal("acknowledged event remains")
 		}
 	}
@@ -42,12 +43,12 @@ func TestBatchAckLeavesBacklog(t *testing.T) {
 
 func TestPurgePreservesCheckpoint(t *testing.T) {
 	s := testSpool(t)
-	if err := s.add([]Event{event(), event()}, "file", Checkpoint{Offset: 123}); err != nil {
+	if err := s.add(envelopesFor(t, s, rawSource, event(), event()), "file", Checkpoint{Offset: 123}); err != nil {
 		t.Fatal(err)
 	}
 	discarded, err := s.purgeQueue()
-	if err != nil || discarded != 2 {
-		t.Fatalf("%d %v", discarded, err)
+	if err != nil || discarded.count != 2 {
+		t.Fatalf("%d %v", discarded.count, err)
 	}
 	var checkpoint Checkpoint
 	if err = s.checkpoint("file", &checkpoint); err != nil || checkpoint.Offset != 123 {
@@ -61,7 +62,7 @@ func TestPurgePreservesCheckpoint(t *testing.T) {
 	if err != nil || len(batch) != 0 {
 		t.Fatalf("%v %v", batch, err)
 	}
-	if err = s.add([]Event{event()}, "file", Checkpoint{Offset: 124}); err != nil {
+	if err = s.add(envelopesFor(t, s, rawSource, event()), "file", Checkpoint{Offset: 124}); err != nil {
 		t.Fatal(err)
 	}
 	n, _, _ = s.stats()

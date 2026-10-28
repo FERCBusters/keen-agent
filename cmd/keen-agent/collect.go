@@ -186,6 +186,7 @@ func collectFile(c Config, s Source, sp *Spool, path string) error {
 		}
 		for j := range events {
 			events[j].Fields["log.file.path"] = path
+			events[j].Ref = fmt.Sprintf("file:%s@%d", path, next.Offset)
 		}
 		if e = sp.addFiltered(s, events, key, next); e != nil {
 			return e
@@ -198,6 +199,7 @@ func collectFile(c Config, s Source, sp *Spool, path string) error {
 	}
 	for j := range events {
 		events[j].Fields["log.file.path"] = path
+		events[j].Ref = fmt.Sprintf("file:%s@%d", path, st.Offset)
 	}
 	return sp.addFiltered(s, events, key, st)
 }
@@ -266,7 +268,7 @@ func collectJournal(c Config, s Source, sp *Spool) error {
 				stamp = time.UnixMicro(us)
 			}
 			event := parse(c, s, message, stamp)
-			event.Fields["journal.cursor"] = cursor
+			event.Ref = "journal:" + cursor
 			for _, k := range []string{"_SYSTEMD_UNIT", "_SYSTEMD_USER_UNIT", "_TRANSPORT", "_BOOT_ID", "SYSLOG_IDENTIFIER", "PRIORITY", "_PID", "_UID", "_GID", "_COMM", "_HOSTNAME"} {
 				var v string
 				json.Unmarshal(record[k], &v)

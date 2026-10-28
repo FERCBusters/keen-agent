@@ -31,24 +31,25 @@
           required
         />
         <p class="hint">Enter the main domain you use to open KEEN.</p>
-        <label for="token">Workstation token</label
+        <label for="code">Enrolment code</label
         ><input
-          id="token"
+          id="code"
           type="password"
-          maxlength="16384"
+          maxlength="128"
           autocomplete="off"
           spellcheck="false"
           required
         />
         <p class="hint">
-          Use the individual token created for this device. Enrollment profile
-          keys aren’t supported.
+          Use the single-use code your administrator created for this device.
+          It expires after 24 hours and works once.
         </p>
         <div class="notice">
           <strong>What happens next</strong>
           <p>
-            Your computer will ask for administrator approval. KEEN saves the
-            credentials securely and enables background posture checks at boot.
+            Your computer will ask for administrator approval. This device then
+            creates its own signing key, registers it with KEEN and enables
+            background posture checks at boot. The key never leaves the device.
           </p>
         </div>
         <button id="connect" type="submit">Connect workstation</button>

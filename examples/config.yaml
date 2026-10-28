@@ -1,6 +1,10 @@
 # HTTPS endpoint, including the /api prefix when using KEEN's standard UI proxy.
 endpoint: https://keen.example.org/api/v1/otlp/logs
-token_file: /etc/keen-agent/token
+# The single-use enrolment code from Admin -> Keen Agents. Run
+# `keen-agent -command enroll` (or start the service) once, then delete the
+# file: the agent's own key, kept in state_dir, is its credential.
+enrollment:
+  code_file: /etc/keen-agent/enrollment-code
 # Optional custom CA, with normal hostname verification still enabled:
 # ca_file: /etc/keen-agent/organisation-ca.pem
 state_dir: /var/lib/keen-agent
@@ -11,6 +15,13 @@ poll_seconds: 5
 retention_days: 0
 # Applies to a journal source's first read only. Files start at byte zero.
 initial_lookback: 24h
+# What becomes evidence; a source can set its own evidence_mode.
+#   events             recognised events only; source lines are sent as hashes
+#   events_with_lines  recognised events with their redacted source lines
+#   all_lines          recognised events, plus every other line as log.line.collected
+# KEEN sets the most each identity may send; a source asking for more is
+# reduced to that limit and reported in health.
+evidence_mode: events
 # RE2 patterns; matching text is replaced before it reaches the disk spool.
 redact:
   - '(?i)Bearer\s+[A-Za-z0-9._~+/=-]+'
@@ -18,6 +29,7 @@ sources:
   - name: system
     kind: journal
     parser: syslog
+    # evidence_mode: events_with_lines
     # units: [sshd.service, nginx.service]
     # include: '(?i)failed|error|accepted|started|stopped'
 

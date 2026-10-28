@@ -23,7 +23,7 @@ func parse(c Config, s Source, raw string, ts time.Time) Event {
 	} else {
 		raw = c.redact(raw)
 	}
-	e := Event{ID: uuid(), Timestamp: ts.UTC(), Source: s.Name, Action: s.Parser + ".record", Outcome: "info", Severity: 3, Raw: raw, Fields: map[string]string{"parser": s.Parser}}
+	e := Event{Timestamp: ts.UTC(), Source: s.Name, Action: s.Parser + ".record", Outcome: "info", Severity: 3, Raw: raw, Fields: map[string]string{"parser": s.Parser}}
 	e.Summary = raw
 	if len(e.Summary) > 2000 {
 		e.Summary = string([]rune(e.Summary)[:min(1000, len([]rune(e.Summary)))])

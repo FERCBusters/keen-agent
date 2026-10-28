@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"keen-agent/internal/agentauth"
 	"keen-agent/internal/posture"
 	"keen-agent/internal/posturemodel"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,16 +23,24 @@ func runPosture(command string, diagnostics bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
 	sys := posture.Local{Session: session}
-	var observations []posture.Observation
+	var all []posture.Observation
+	collector := "posture_host"
 	if session {
-		observations = posture.Desktop(ctx, sys)
+		all = posture.Desktop(ctx, sys)
+		collector = "posture_session"
 	} else {
-		observations = posture.Host(ctx, sys)
+		all = posture.Host(ctx, sys)
 	}
+	runID, err := agentauth.NewSecret()
+	if err != nil {
+		return err
+	}
+	coverage := posturemodel.CoverageOf(collector, runID[:22], all)
+	observations := all
 	if !diagnostics {
-		observations = posturemodel.Evidence(observations)
+		observations = posturemodel.Evidence(all)
 	}
-	return posture.Emit(os.Stdout, observations)
+	return posture.Emit(os.Stdout, observations, coverage)
 }
 
 // Only journal-attested unit/UID metadata controls authority. JSON and the
@@ -46,18 +55,33 @@ func normalizePosture(e *Event) error {
 	if e.Fields["_TRANSPORT"] != "stdout" || (!host && !desktop) {
 		return errors.New("untrusted posture journal origin")
 	}
-	var o posture.Observation
-	decoder := json.NewDecoder(bytes.NewBufferString(e.Raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&o); err != nil {
-		return errors.New("invalid posture JSON")
+	e.Authority = "host_root"
+	if desktop {
+		e.Authority = "user_session"
 	}
-	var extra any
-	if decoder.Decode(&extra) != io.EOF {
-		return errors.New("trailing posture JSON")
+	if strings.Contains(e.Raw, `"kind":"coverage"`) {
+		var c posturemodel.Coverage
+		if err := strictJSON(e.Raw, &c); err != nil {
+			return errors.New("invalid posture coverage JSON")
+		}
+		if err := c.Validate(); err != nil {
+			return err
+		}
+		if (desktop && c.Collector != "posture_session") || (host && c.Collector != "posture_host") {
+			return errors.New("coverage collector does not match its unit")
+		}
+		e.Coverage = &c
+		return nil
+	}
+	var o posture.Observation
+	if err := strictJSON(e.Raw, &o); err != nil {
+		return errors.New("invalid posture JSON")
 	}
 	if err := o.Validate(); err != nil {
 		return err
+	}
+	if o.Status != "observed" {
+		return errors.New("unmeasured posture is not evidence")
 	}
 	if desktop && o.Check != "screen_lock" {
 		return errors.New("desktop cannot report host posture")
@@ -66,25 +90,19 @@ func normalizePosture(e *Event) error {
 		return errors.New("host cannot report user screen lock")
 	}
 	e.Action = "posture." + o.Check
-	e.Outcome = "info"
-	e.Severity = 3
-	e.Actor = strconv.FormatUint(uid, 10)
-	e.Summary = fmt.Sprintf("%s (%s, %s): %s; %s", o.Check, o.Provider, o.Scope, o.Status, o.Reason)
-	e.Fields["posture.schema_version"] = "1"
-	e.Fields["posture.check"] = o.Check
-	e.Fields["posture.provider"] = o.Provider
-	e.Fields["posture.scope"] = o.Scope
-	e.Fields["posture.status"] = o.Status
-	e.Fields["posture.reason"] = o.Reason
-	authority := "host_root"
-	if desktop {
-		authority = "user_session"
+	e.Posture = &o
+	return nil
+}
+
+func strictJSON(raw string, v any) error {
+	decoder := json.NewDecoder(bytes.NewBufferString(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		return err
 	}
-	e.Fields["posture.authority"] = authority
-	e.Fields["posture.subject_uid"] = strconv.FormatUint(uid, 10)
-	e.Fields["posture.observed_at"] = e.Timestamp.UTC().Format(time.RFC3339Nano)
-	for k, v := range o.Facts {
-		e.Fields["posture."+k] = v
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return errors.New("trailing JSON")
 	}
 	return nil
 }

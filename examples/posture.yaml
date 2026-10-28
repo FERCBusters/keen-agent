@@ -1,7 +1,8 @@
 # Standalone posture-only configuration. Add this source to your existing
 # config instead if you also collect logs. Enable the collectors separately.
 endpoint: https://keen.example.org/api/v1/otlp/logs
-token_file: /etc/keen-agent/token
+enrollment:
+  code_file: /etc/keen-agent/enrollment-code
 state_dir: /var/lib/keen-agent
 queue_mb: 256
 poll_seconds: 15

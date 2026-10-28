@@ -10,6 +10,8 @@ case "$ID:$VERSION_ID" in
  *) echo "Unsupported distribution/release: $ID $VERSION_ID" >&2; exit 1 ;;
 esac
 arch=$(dpkg --print-architecture)
+version=$(cat VERSION)
+case "$version" in *[!0-9.]*|"") echo "Invalid VERSION: $version" >&2; exit 1 ;; esac
 root=$(mktemp -d)
 install -D -m 0755 dist/keen-setup-helper "$root/usr/libexec/keen-setup-helper"
 install -D -m 0644 packaging/keen-workstation.service "$root/lib/systemd/system/keen-workstation.service"
@@ -40,14 +42,15 @@ cp LICENSE NOTICE README.md "$root/usr/share/doc/keen-agent/"
 cp -r licenses "$root/usr/share/doc/keen-agent/"
 cat > "$root/DEBIAN/control" <<EOF
 Package: keen-agent
-Version: 0.1.10-1+${revision}
+Version: ${version}-1+${revision}
 Architecture: $arch
 Maintainer: KEEN maintainers <mig5@mig5.net>
 Depends: ca-certificates, passwd, systemd${setup_dep}
 Section: admin
 Priority: optional
-Description: KEEN evidence log collection agent
- Durable OTLP/HTTP evidence collection with per-agent credentials.
+Description: KEEN signed evidence agent
+ Sends signed Universal Evidence Utility (UEU) evidence from servers and
+ workstations to KEEN over OTLP/HTTP, with per-agent Ed25519 keys.
 EOF
 printf '/etc/keen-agent/config.yaml\n' > "$root/DEBIAN/conffiles"
 { printf '#!/bin/sh\nset -eu\n[ "$1" = configure ] || exit 0\n'; cat packaging/setup-account.sh; } > "$root/DEBIAN/postinst"
@@ -66,4 +69,4 @@ if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
 EOF
 chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/prerm" "$root/DEBIAN/postrm"
 mkdir -p /out
-dpkg-deb --root-owner-group --build "$root" "/out/keen-agent_0.1.10-1+${revision}_${arch}.deb"
+dpkg-deb --root-owner-group --build "$root" "/out/keen-agent_${version}-1+${revision}_${arch}.deb"

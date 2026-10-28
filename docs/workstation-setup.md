@@ -1,144 +1,93 @@
 # Workstation setup
 
-Install the package and open **KEEN Setup** from Applications (macOS), the Start
-menu (Windows), or the application menu (Linux). Run the UI as the signed-in
-user, not root/Administrator. Enter the main HTTPS KEEN domain and the individual
-token registered for this workstation. KEEN administrators can associate that
-workstation token with a Person. Enrollment profile keys are not supported.
+Register the workstation in KEEN first: **Admin → Keen Agents → Register a
+collector**, device type **Workstation**, linked to its person. KEEN shows a
+single-use enrolment code, valid for 24 hours.
 
-Choose **Connect workstation** and approve the operating system's administrator
-prompt. Setup verifies the token with KEEN's authenticated heartbeat endpoint,
-saves the credentials in protected files, enables boot startup and starts the
-service. “Connected” confirms credential verification and service activation;
-the first full posture report is collected asynchronously. Close the window
-when setup finishes. Only the Go service and the scheduled collectors remain.
-No Electron process, local HTTP server or tray app is needed afterwards.
+Install the package (see [keen.cloud/agent](https://keen.cloud/agent)) and
+open **KEEN Setup** from Applications (macOS), the Start menu (Windows) or the
+application menu (Linux). Run it as the signed-in user, not
+root/Administrator. Enter the KEEN address and the enrolment code and choose
+**Connect workstation**, then approve the operating system's administrator
+prompt.
 
-Checks run hourly. Linux desktop checks require a graphical login and run as
-the user who completes setup; host checks run from boot without a login. The
-setup app enables that user's systemd timer and an XDG login startup entry for
-desktops that do not activate graphical-session.target. Other users can enable
-the same session timer in their own session. The Linux log sender's polling and
-health heartbeat are independent of the hourly posture schedule.
+The elevated helper generates the device's Ed25519 key pair and pairwise
+pseudonym key in the collector's private state directory, enrols the public
+key with the code (proving possession of the private key), writes the
+collector's configuration without any credential, enables boot startup and
+starts the service. “Connected” confirms that KEEN bound the key and the
+service started; the first posture run is collected asynchronously. Close the
+window when setup finishes. Only the Go service and the scheduled collectors
+remain; no Electron process, local HTTP server or tray app runs afterwards.
 
-## Build Linux packages
+The code is used once. If setup fails after KEEN bound the key (for example
+the service could not start), run it again with the same code: KEEN returns
+the same binding for the same key. A code that has expired, or was used by
+another device, needs a new code from KEEN (**Issue enrolment code** on the
+agent's card); the device's previous key keeps working until the new code is
+used.
 
-On the Linux workstation/build host, install Node.js 22.12+ (or a supported newer
-LTS), npm, Docker/BuildKit, then use the existing native package builder:
+Checks run hourly. Each run sends one observation per measured setting and a
+coverage record of what it attempted, measured and could not measure. Linux
+desktop checks require a graphical login and run as the user who completes
+setup; host checks run from boot without a login. The setup app enables that
+user's systemd timer and an XDG login startup entry for desktops that do not
+activate graphical-session.target. Other users can enable the same session
+timer in their own session.
 
-```
-sh packaging/build-workstation.sh debian13
-sh packaging/build-workstation.sh fedora44
-```
+## Where things are kept
 
-The script packages Electron for the host's x64/arm64 architecture and includes
-it in the normal keen-agent DEB/RPM. The Docker builds compile and test Go and
-build the matching setup helper. See packaging/build-packages.sh for supported
-distributions, including Ubuntu targets. Install the resulting package using
-apt or dnf so its GTK/NSS/Polkit dependencies are installed. A desktop Polkit
-authentication agent and a systemd user session must be available.
+| Platform | Configuration | Identity and queue |
+| --- | --- | --- |
+| Windows | `%ProgramData%\KEEN\Posture\config.json` | `%ProgramData%\KEEN\Posture\state\` (SYSTEM and Administrators only) |
+| macOS | `/Library/Application Support/KEEN/Posture/config.json` | `/Library/Application Support/KEEN/Posture/state/` (root only) |
+| Linux | `/etc/keen-workstation/config.yaml` | `/var/lib/keen-workstation/` (owned by `keen-agent`, mode 0700) |
 
-Ordinary server package builds can omit the Electron app: remove dist/setup-app
-before running packaging/build-packages.sh directly. The GUI adds Electron's
-runtime size to the installer, but consumes no memory after it is closed.
-
-The app uses /usr/libexec/keen-setup-helper through pkexec. It creates
-/etc/keen-workstation/config.yaml and token (root:keen-agent, 0640), and enables
-keen-workstation.service with its independent /var/lib/keen-workstation queue.
-The existing /etc/keen-agent log configuration is never overwritten. The package
-installs the hourly host and session timers. If upgrading an already active
-session collector, reload and restart it as that desktop user:
+On Linux, workstation posture runs as `keen-workstation.service`, a separate
+`keen-agent` instance with its own identity and queue; an existing
+`/etc/keen-agent` server configuration is never touched. If upgrading an
+already active session collector, reload and restart it as that desktop user:
 
 ```
 systemctl --user daemon-reload
 systemctl --user restart keen-posture-session.timer
 ```
 
-## Build macOS
+## Credentials, retries and removal
 
-Build on macOS with Go 1.26+, Node.js 22.12+, npm, Xcode command-line tools and the
-Developer ID Application/Installer identities in the keychain. Configure the
-notarytool keychain profile separately, then:
+The Electron renderer is sandboxed and isolated, with no Node integration,
+remote navigation, external content or generic command IPC. The code is never
+a command-line argument: a short-lived request file readable only by the
+signed-in user and administrators carries it to the helper and is removed after
+completion or cancellation. An abrupt crash can leave that protected temporary
+file; administrators can remove an abandoned `keen-setup-*` directory.
 
-```
-export APPLICATION_IDENTITY='Developer ID Application: YOUR NAME (TEAMID)'
-export INSTALLER_IDENTITY='Developer ID Installer: YOUR NAME (TEAMID)'
-export NOTARY_PROFILE='keen-notary'
-./packaging/macos/build-sign-notarize.sh
-```
+The helper accepts only the address and code, validates HTTPS, refuses
+redirects and environment proxies, never disables TLS certificate or hostname
+verification and prints no remote response body. It writes only fixed protected
+paths and enables fixed installed services. Setup refuses to replace an
+existing connection to a different KEEN address; a stale `setup.lock` after a
+crash needs an administrator to remove it, after confirming no setup helper is
+running.
 
-This builds universal Intel/Apple Silicon Go binaries and the Electron app,
-signs the app's nested components with hardened runtime, signs the Go helper and
-collector, builds and signs the PKG, notarises it and staples the result.
-Output: dist/macos/keen-posture-0.1.10.pkg. The application is installed at
-/Applications/KEEN Setup.app. Credentials remain root-only under
-/Library/Application Support/KEEN/Posture. launchd starts collection at boot
-and schedules it hourly.
+The private key never leaves the device and the collector renews it before it
+expires. To move a device to another KEEN identity or installation, stop the
+service, archive and remove its configuration and state directory, then run
+setup with a new code. Never copy a state directory to another device.
 
-For development before acquiring certificates:
+Uninstalling the package stops and removes its service and setup app, and keeps
+the private configuration, identity and queued evidence for deliberate
+administrator cleanup. On macOS stop `system/net.keen.posture` before removing
+its plist and binaries. On Linux also disable the user's
+`keen-posture-session.timer` and remove
+`~/.config/autostart/keen-posture-session.desktop` if no longer collecting
+posture.
 
-```
-UNSIGNED=1 ./packaging/macos/build-sign-notarize.sh
-```
+## Building
 
-This creates keen-posture-0.1.10-unsigned.pkg with local ad-hoc application/binary
-signatures, without notarisation or a trusted installer signature. Test on a Mac
-where you deliberately approve your own development build using the OS's normal
-application approval controls. HTTPS certificate verification remains enabled.
-
-## Build Windows with a Harica hardware token
-
-Build on Windows with Go 1.26+, Node.js 22.12+, npm, WiX 4+ and Windows SDK
-SignTool installed. Install the hardware token's vendor middleware and expose its
-certificate in CurrentUser\\My (or use -MachineStore for LocalMachine\\My).
-The hardware middleware prompts for the PIN; no PIN or private key enters this
-repository or the script arguments.
-
-```
-.\packaging\windows\build-sign.ps1 -Architecture amd64 -CertificateThumbprint YOUR40HEXTHUMBPRINT -TimestampUrl https://YOUR-TSA
-```
-
-The script packages Electron, signs its executable and executable helpers plus
-the Go collector/setup helper, generates explicit WiX file components, builds
-the MSI, signs it and verifies the signatures. SHA-256 signature and timestamp
-digests are retained. Use -Architecture arm64 for an ARM64 Windows build. Test
-on each architecture you distribute.
-
-If PowerShell reports “running scripts is disabled”, allow locally created and
-unblocked scripts for this PowerShell window only (no machine-wide change):
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-```
-
-For a downloaded copy, review the build script and then unblock that file:
-
-```powershell
-Unblock-File .\packaging\windows\build-sign.ps1
-```
-
-The Process policy expires when this PowerShell window closes. Organisation
-Group Policy may override it; inspect `Get-ExecutionPolicy -List` and ask your
-administrator if MachinePolicy/UserPolicy controls execution. The build's
-`-Unsigned` switch skips application/installer signing; it does not alter
-PowerShell execution policy.
-
-For certificate-free development builds:
-
-```
-.\packaging\windows\build-sign.ps1 -Architecture amd64 -Unsigned
-```
-
-Install the MSI, then open **KEEN Setup** from Start. The UI runs normally;
-UAC elevates only the installed Go helper. ProgramData\\KEEN\\Posture credentials
-and state allow SYSTEM and Administrators only. The Windows service runs as
-LocalSystem, starts automatically at boot and checks hourly. Before setup,
-the unconfigured service cannot collect or send; a boot-time start will stop
-until configuration exists. MSI upgrades retain credentials and state and stop
-the service while replacing files; restart KeenPosture after an upgrade (or
-reboot) to start the new binary immediately. Automatic boot startup is retained.
-
-## Development and checks
+[Releasing](releasing.md) covers building and signing the Windows MSI, the
+macOS package and the Linux packages with the setup app
+(`sh packaging/build-workstation.sh debian13`). For development:
 
 ```
 make test
@@ -147,45 +96,17 @@ npm test --prefix onboarding
 npm start --prefix onboarding
 ```
 
-npm start previews the UI. Test actual onboarding from an installed package,
-where the fixed privileged helper and service definitions are present. The
-Windows development Electron path is not the installed helper location.
+`npm start` previews the UI. Test actual onboarding from an installed package,
+where the fixed privileged helper and service definitions are present.
 
-Test on each OS: initial connection, rejected/expired token, invalid certificate,
-cancelled elevation, retry, reboot before login, login/session collection and
-one-hour spacing in KEEN's evidence timestamps. Check the first report in KEEN;
-a credential heartbeat alone does not establish that every collector succeeded.
+Test on each platform: initial connection, a rejected and an expired code, an
+invalid certificate, cancelled elevation, retry with the same code, reboot
+before login, login and session collection, and one-hour spacing of evidence
+in KEEN. Open the first posture evidence in KEEN and check it shows **Signature
+verified** and a started or continuous chain.
 
-## Credentials, retries and removal
-
-The Electron renderer is sandboxed and isolated, with no Node integration,
-remote navigation, external content or generic command IPC. Tokens are never
-command-line arguments. A short-lived request file is readable only by the
-signed-in user and administrators, and is removed after completion/cancellation.
-An abrupt crash/power loss can leave that protected temporary file; administrators
-can remove an abandoned keen-setup-* temporary directory. JavaScript strings are
-not guaranteed secure-memory erasure.
-
-The elevated helper accepts only URL/token fields, bounds the request, validates
-HTTPS again, refuses redirects and environment proxies, and never disables TLS
-certificate or hostname verification. No remote response body or token is printed.
-It writes only fixed protected paths and enables fixed installed services.
-
-Setup refuses a different existing connection. Retrying identical credentials
-can finish service activation after an error. A stale setup.lock after a crash
-requires administrator removal only after confirming no setup helper is running.
-For token rotation, stop the service, replace the protected token as an
-administrator, then restart. Keep existing queue data with the same KEEN identity.
-When changing KEEN instance/device identity, archive its old config and queue and
-start fresh; do not send an old queue to a different identity or installation.
-Individual token expiry still applies; enrollment and automatic renewal are not
-implemented by this app.
-
-Uninstalling the package stops/removes its machine service and UI, while private
-credentials and queued data are retained for deliberate administrator cleanup.
-On macOS stop/unload system/net.keen.posture before removing its plist and binaries.
-On Linux also disable the current user's keen-posture-session.timer and remove
-~/.config/autostart/keen-posture-session.desktop if no longer collecting posture.
+The packaged setup app uses the supplied KEEN mitigator artwork for macOS ICNS,
+Windows ICO and Linux PNG icons.
 
 ### macOS screen-lock detection
 

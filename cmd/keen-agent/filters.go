@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -91,17 +92,34 @@ func keepStructured(s Source, e Event) bool {
 type filterTally struct {
 	source string
 	count  int64
+	kind   string
 }
 
+// addFiltered applies structured filters, classifies what remains and queues
+// the resulting envelopes with the checkpoint in one transaction.
 func (sp *Spool) addFiltered(s Source, events []Event, key string, state any) error {
-	kept := make([]Event, 0, len(events))
-	var discarded int64
+	var envelopes []map[string]any
+	var discarded, notEvidence int64
 	for _, e := range events {
-		if keepStructured(s, e) {
-			kept = append(kept, e)
-		} else {
+		if !keepStructured(s, e) {
 			discarded++
+			continue
 		}
+		if sp.sealer == nil {
+			return errors.New("agent is not enrolled; collection waits for enrolment")
+		}
+		out, err := sp.sealer.envelopes(s, e)
+		if err != nil {
+			// A record the catalogue cannot express is counted, never sent in another shape.
+			if err := sp.reject(); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(out) == 0 {
+			notEvidence++
+		}
+		envelopes = append(envelopes, out...)
 	}
-	return sp.add(kept, key, state, filterTally{s.Name, discarded})
+	return sp.add(envelopes, key, state, filterTally{s.Name, discarded, "filtered"}, filterTally{s.Name, notEvidence, "not_evidence"})
 }

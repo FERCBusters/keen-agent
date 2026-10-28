@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"keen-agent/internal/agentauth"
 	"os"
 	"os/exec"
 	"os/user"
@@ -82,7 +83,32 @@ func prepare() error {
 	if e = os.Chown(configRoot(), 0, gid); e != nil {
 		return e
 	}
-	return os.Chmod(configRoot(), 0750)
+	if e = os.Chmod(configRoot(), 0750); e != nil {
+		return e
+	}
+	uid, e := strconv.Atoi(u.Uid)
+	if e != nil {
+		return e
+	}
+	return serviceDir("/var/lib/keen-workstation", uid, gid)
+}
+
+// serviceDir creates the agent's private state directory for its account.
+func serviceDir(path string, uid, gid int) error {
+	if e := trusted(filepath.Dir(path)); e != nil {
+		return e
+	}
+	if e := os.Mkdir(path, 0700); e != nil && !os.IsExist(e) {
+		return e
+	}
+	s, e := os.Lstat(path)
+	if e != nil || !s.IsDir() || s.Mode()&os.ModeSymlink != 0 {
+		return errors.New("invalid state directory")
+	}
+	if e = os.Chown(path, uid, gid); e != nil {
+		return e
+	}
+	return os.Chmod(path, 0700)
 }
 func protectFile(path string) error {
 	if runtime.GOOS == "darwin" {
@@ -103,13 +129,32 @@ func protectFile(path string) error {
 }
 func configBytes(r Request) []byte {
 	if runtime.GOOS == "darwin" {
-		b, _ := json.Marshal(map[string]any{"endpoint": r.URL, "token_file": filepath.Join(configRoot(), "token"), "state_dir": filepath.Join(configRoot(), "state"), "interval_seconds": 3600})
+		b, _ := json.Marshal(map[string]any{"endpoint": r.URL, "state_dir": filepath.Join(configRoot(), "state"), "interval_seconds": 3600})
 		return b
 	}
-	// JSON string escaping is also valid YAML scalar escaping.
+	// JSON string escaping is also valid YAML scalar escaping. The identity is
+	// already enrolled, so the configuration holds no enrolment credential.
 	u, _ := json.Marshal(r.URL)
-	return []byte("endpoint: " + string(u) + "\ntoken_file: /etc/keen-workstation/token\nstate_dir: /var/lib/keen-workstation\nqueue_mb: 32\npoll_seconds: 15\ninitial_lookback: 2h\nsources:\n  - name: workstation-posture\n    kind: journal\n    parser: posture\n")
+	return []byte("endpoint: " + string(u) + "\nstate_dir: /var/lib/keen-workstation\nqueue_mb: 32\npoll_seconds: 15\ninitial_lookback: 2h\nsources:\n  - name: workstation-posture\n    kind: journal\n    parser: posture\n")
 }
+
+// identityStore is the posture service's state directory; on Linux the
+// identity is written for the keen-agent service account.
+func identityStore() agentauth.FileStore {
+	if runtime.GOOS == "darwin" {
+		return agentauth.FileStore{Dir: filepath.Join(configRoot(), "state")}
+	}
+	store := agentauth.FileStore{Dir: "/var/lib/keen-workstation"}
+	if u, e := user.Lookup("keen-agent"); e == nil {
+		uid, e1 := strconv.Atoi(u.Uid)
+		gid, e2 := strconv.Atoi(u.Gid)
+		if e1 == nil && e2 == nil {
+			store.Owner = &agentauth.Owner{UID: uid, GID: gid}
+		}
+	}
+	return store
+}
+
 func run(ctx context.Context, p string, args ...string) error {
 	if e := trusted(p); e != nil {
 		return e

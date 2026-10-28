@@ -3,9 +3,7 @@ package nativeposture
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,17 +13,22 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
+	"runtime"
 	"strings"
 	"time"
+
+	"keen-agent/internal/agentauth"
+	"keen-agent/internal/posturemodel"
+	"keen-agent/internal/ueu"
 )
 
+// Config is the companion's protected configuration. The enrolment code is
+// needed only until the first enrolment; the setup tools remove it after.
 type Config struct {
-	Endpoint        string `json:"endpoint"`
-	TokenFile       string `json:"token_file"`
-	StateDir        string `json:"state_dir"`
-	IntervalSeconds int    `json:"interval_seconds"`
+	Endpoint           string `json:"endpoint"`
+	StateDir           string `json:"state_dir"`
+	IntervalSeconds    int    `json:"interval_seconds"`
+	EnrollmentCodeFile string `json:"enrollment_code_file,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -56,8 +59,8 @@ func LoadConfig(path string) (Config, error) {
 	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasSuffix(u.Path, "/v1/otlp/logs") {
 		return c, errors.New("endpoint must be HTTPS ending in /v1/otlp/logs, without credentials or query")
 	}
-	if !filepath.IsAbs(c.TokenFile) || !filepath.IsAbs(c.StateDir) {
-		return c, errors.New("token_file and state_dir must be absolute")
+	if !filepath.IsAbs(c.StateDir) || (c.EnrollmentCodeFile != "" && !filepath.IsAbs(c.EnrollmentCodeFile)) {
+		return c, errors.New("state_dir and enrollment_code_file must be absolute")
 	}
 	if c.IntervalSeconds == 0 {
 		c.IntervalSeconds = 3600
@@ -65,71 +68,132 @@ func LoadConfig(path string) (Config, error) {
 	if c.IntervalSeconds < 300 || c.IntervalSeconds > 86400 {
 		return c, errors.New("interval_seconds must be 300..86400")
 	}
-	if e = privatePath(c.TokenFile, false); e != nil {
-		return c, e
-	}
 	if e = privatePath(c.StateDir, true); e != nil {
 		return c, e
 	}
 	return c, nil
 }
-func attr(k, v string) any {
-	return map[string]any{"key": k, "value": map[string]string{"stringValue": v}}
-}
-func Payload(r Report) ([]byte, error) {
-	records := []any{}
-	for _, o := range r.Observations {
-		if e := o.Validate(); e != nil {
-			return nil, e
-		}
-		if o.Status != "observed" {
-			continue
-		}
-		id := make([]byte, 16)
-		if _, e := rand.Read(id); e != nil {
-			return nil, e
-		}
-		id[6] = (id[6] & 15) | 64
-		id[8] = (id[8] & 63) | 128
-		s := hex.EncodeToString(id)
-		uuid := s[:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:]
-		a := []any{attr("keen.event.id", uuid), attr("keen.source", "posture"), attr("keen.action", "posture."+o.Check), attr("keen.outcome", "info"), attr("keen.summary", o.Check+" ("+o.Provider+"): "+o.Reason), attr("keen.actor", ""), attr("keen.field.agent.version", Version), attr("keen.field.posture.schema_version", "1"), attr("keen.field.posture.check", o.Check), attr("keen.field.posture.provider", o.Provider), attr("keen.field.posture.scope", o.Scope), attr("keen.field.posture.status", o.Status), attr("keen.field.posture.reason", o.Reason), attr("keen.field.posture.authority", "native_collector"), attr("keen.field.posture.platform", r.Platform), attr("keen.field.posture.observed_at", r.ObservedAt.Format(time.RFC3339Nano))}
-		keys := []string{}
-		for k := range o.Facts {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			a = append(a, attr("keen.field.posture."+k, o.Facts[k]))
-		}
-		raw, e := json.Marshal(o)
-		if e != nil {
-			return nil, e
-		}
-		records = append(records, map[string]any{"attributes": a, "timeUnixNano": strconv.FormatInt(r.ObservedAt.UnixNano(), 10), "severityNumber": 7, "body": map[string]string{"stringValue": string(raw)}})
-	}
-	return json.Marshal(map[string]any{"resourceLogs": []any{map[string]any{"resource": map[string]any{"attributes": []any{attr("service.name", "keen-agent")}}, "scopeLogs": []any{map[string]any{"scope": map[string]string{"name": "keen-posture", "version": Version}, "logRecords": records}}}}})
+
+func client() *http.Client {
+	return agentauth.Client(&http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, Proxy: nil})
 }
 
-// Deliver queues first and only deletes a report after an unambiguous acknowledgement.
-// A report retains its event IDs across retries. Local Bolt locking prevents overlaps.
-func Deliver(ctx context.Context, c Config, r Report) error {
+// Manager opens the identity and its enrolment credential.
+func Manager(c Config, h *http.Client) (*agentauth.Manager, error) {
+	store := identityStore(c.StateDir)
+	id, err := agentauth.Open(store, c.Endpoint, "")
+	if err != nil {
+		return nil, err
+	}
+	credential := func() (string, error) {
+		if c.EnrollmentCodeFile == "" {
+			return "", errors.New("no enrolment code configured")
+		}
+		if err := privatePath(c.EnrollmentCodeFile, false); err != nil {
+			return "", err
+		}
+		b, err := os.ReadFile(c.EnrollmentCodeFile)
+		if err != nil {
+			return "", err
+		}
+		return agentauth.ReadCredential(b)
+	}
+	return agentauth.NewManager(store, id, h, "keen-posture/"+Version, credential), nil
+}
+
+// Enroll binds this device's key using the configured code.
+func Enroll(ctx context.Context, c Config) (agentauth.Identity, error) {
+	h := client()
+	defer h.CloseIdleConnections()
+	m, err := Manager(c, h)
+	if err != nil {
+		return agentauth.Identity{}, err
+	}
+	if m.Identity().Enrolled() {
+		return m.Identity(), nil
+	}
+	ready, err := m.Ready(ctx, time.Now())
+	if !ready && err == nil {
+		err = errors.New("enrolment did not complete; retry later")
+	}
+	return m.Identity(), err
+}
+
+func producer(id agentauth.Identity) (ueu.Producer, error) {
+	subject, err := id.Subject()
+	if err != nil {
+		return ueu.Producer{}, err
+	}
+	asset := id.AssetType
+	if asset == "" {
+		asset = "workstation"
+	}
+	return ueu.Producer{Catalogue: ueu.KEEN(), ApplicationID: "keen-posture", ApplicationVersion: Version, InstanceID: id.AgentID, AssetType: asset, Platform: runtime.GOOS, Subject: subject}, nil
+}
+
+// Envelopes turns one run into evidence: each measured observation, then the
+// run's coverage, so KEEN can tell unmeasured checks from absent ones.
+func Envelopes(p ueu.Producer, all []Observation, observedAt time.Time) ([]map[string]any, error) {
+	var out []map[string]any
+	for _, o := range all {
+		if o.Validate() != nil || o.Status != "observed" {
+			continue
+		}
+		kind, value, scope := ueu.LocalAccount(o.Scope)
+		env, err := p.Observe(ueu.Observation{Check: o.Check, Provider: o.Provider, Scope: scope, Status: o.Status, Reason: o.Reason, Facts: o.Facts,
+			ObservedAt: observedAt, SubjectKind: kind, SubjectValue: value, Method: "native_collector", ValidFor: 24 * time.Hour})
+		if err != nil {
+			return nil, fmt.Errorf("%s/%s: %w", o.Check, o.Provider, err)
+		}
+		out = append(out, env)
+	}
+	run, err := agentauth.NewSecret()
+	if err != nil {
+		return nil, err
+	}
+	c := posturemodel.CoverageOf("native_posture", run[:22], all)
+	observed := map[string]bool{}
+	for _, v := range c.Observed {
+		observed[v] = true
+	}
+	var unavailable []string
+	for _, v := range c.Attempted {
+		if !observed[v] {
+			unavailable = append(unavailable, v)
+		}
+	}
+	env, err := p.Emit(ueu.Event{Type: "evidence.collection.completed", Component: c.Collector, Action: "collect", Outcome: "info", Time: observedAt,
+		Attributes: map[string]string{"collector": c.Collector, "run_id": c.RunID, "checks_attempted": strings.Join(c.Attempted, ","),
+			"checks_observed": strings.Join(c.Observed, ","), "checks_unavailable": strings.Join(unavailable, ","), "probes_unavailable": strings.Join(c.Unavailable, ","),
+			"checks_attempted_count": fmt.Sprint(len(c.Attempted)), "checks_observed_count": fmt.Sprint(len(c.Observed))}})
+	if err != nil {
+		return nil, err
+	}
+	return append(out, env), nil
+}
+
+// Preview returns the envelopes a run would produce, sealed with nothing and
+// pseudonymised with a throwaway key, for local inspection.
+func Preview(all []Observation) ([]map[string]any, error) {
+	key, err := ueu.NewPairwiseKey()
+	if err != nil {
+		return nil, err
+	}
+	pr := ueu.Producer{Catalogue: ueu.KEEN(), ApplicationID: "keen-posture", ApplicationVersion: Version, InstanceID: "00000000-0000-4000-8000-000000000000", AssetType: "workstation", Platform: runtime.GOOS, Subject: ueu.Subject{Type: "pairwise", Key: key}}
+	return Envelopes(pr, all, time.Now().UTC())
+}
+
+const maxQueued = 4096
+
+// Deliver seals a run into the local queue, then sends queued evidence. A
+// record leaves the queue only after an unambiguous acknowledgement; its
+// evidence identifier and bytes stay the same across retries.
+func Deliver(ctx context.Context, c Config, all []Observation, observedAt time.Time) error {
 	if e := privatePath(c.StateDir, true); e != nil {
 		return e
 	}
-	if e := privatePath(c.TokenFile, false); e != nil {
-		return e
-	}
-	token, e := os.ReadFile(c.TokenFile)
-	if e != nil {
-		return e
-	}
-	t := strings.TrimSpace(string(token))
-	if len(t) < 16 || len(t) > 16384 || strings.ContainsAny(t, "\r\n\t ") {
-		return errors.New("invalid token file")
-	}
 	p := filepath.Join(c.StateDir, "pending.db")
-	if _, e = os.Lstat(p); e == nil {
+	if _, e := os.Lstat(p); e == nil {
 		if e = privatePath(p, false); e != nil {
 			return e
 		}
@@ -141,67 +205,118 @@ func Deliver(ctx context.Context, c Config, r Report) error {
 		return errors.New("cannot lock posture queue")
 	}
 	defer db.Close()
-	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
-	defer client.CloseIdleConnections()
-	// Drain old reports before adding new ones so a previously full queue can recover.
-	flush := func() error { return flushQueue(ctx, db, client, c.Endpoint, t) }
-	oldErr := flush()
-	if len(r.Observations) > 0 {
-		payload, e := Payload(r)
-		if e != nil {
-			return e
-		}
-		if len(payload) > 900000 {
-			return errors.New("report exceeds ingestion limit")
-		}
-		if e = db.Update(func(tx *bolt.Tx) error {
-			b, e := tx.CreateBucketIfNotExists([]byte("pending"))
-			if e != nil {
-				return e
-			}
-			if b.Stats().KeyN >= 128 {
-				return errors.New("posture queue full; old reports retained")
-			}
-			seq, e := b.NextSequence()
-			if e != nil {
-				return e
-			}
-			return b.Put([]byte(fmt.Sprintf("%020d", seq)), payload)
-		}); e != nil {
-			return e
-		}
-	}
-	if oldErr != nil {
-		return oldErr
-	}
-	return flush()
-}
-func post(ctx context.Context, h *http.Client, endpoint, token string, payload []byte) error {
-	req, e := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(payload))
+	h := client()
+	defer h.CloseIdleConnections()
+	m, e := Manager(c, h)
 	if e != nil {
 		return e
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "keen-posture/"+Version)
-	resp, e := h.Do(req)
-	if e != nil {
-		return errors.New("network/TLS failure; report retained")
+	ready, e := m.Ready(ctx, time.Now())
+	id := m.Identity()
+	if !id.Enrolled() {
+		if e == nil {
+			e = errors.New("device is not enrolled; run keen-posture -command enroll")
+		}
+		return e
 	}
-	defer resp.Body.Close()
-	b, e := io.ReadAll(io.LimitReader(resp.Body, 65537))
-	if e != nil || len(b) > 65536 {
-		return errors.New("invalid acknowledgement; report retained")
+	pr, err := producer(id)
+	if err != nil {
+		return err
 	}
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP %d; report retained", resp.StatusCode)
+	envelopes, err := Envelopes(pr, all, observedAt)
+	if err != nil {
+		return err
 	}
+	if err = seal(db, id.AgentID, envelopes); err != nil {
+		return err
+	}
+	if !ready {
+		if e == nil {
+			e = errors.New("credential renewal pending; evidence retained")
+		}
+		return e
+	}
+	if err = flushQueue(ctx, db, h, c.Endpoint, id); err != nil {
+		var rejected agentauth.HTTPError
+		if errors.As(err, &rejected) && (rejected.Status == 401 || rejected.Status == 403) {
+			m.Block("agent authentication rejected; administrator intervention required")
+		}
+		return err
+	}
+	return heartbeat(ctx, db, h, c.Endpoint, id)
+}
+
+func seal(db *bolt.DB, stream string, envelopes []map[string]any) error {
+	return db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte("pending"))
+		if err != nil {
+			return err
+		}
+		meta, err := tx.CreateBucketIfNotExists([]byte("meta"))
+		if err != nil {
+			return err
+		}
+		if b.Stats().KeyN+len(envelopes) > maxQueued {
+			return errors.New("posture queue full; older evidence retained")
+		}
+		var chain ueu.Chain
+		if raw := meta.Get([]byte("chain")); raw != nil {
+			if err = json.Unmarshal(raw, &chain); err != nil {
+				return err
+			}
+		}
+		for _, env := range envelopes {
+			sealed, err := ueu.Seal(env, stream, &chain, time.Now())
+			if err != nil {
+				return err
+			}
+			v, err := json.Marshal(sealed)
+			if err != nil {
+				return err
+			}
+			if err = b.Put([]byte(fmt.Sprintf("%020d", sealed.Sequence)), v); err != nil {
+				return err
+			}
+		}
+		raw, err := json.Marshal(chain)
+		if err != nil {
+			return err
+		}
+		return meta.Put([]byte("chain"), raw)
+	})
+}
+
+func pending(db *bolt.DB) ([][]byte, []ueu.Sealed, error) {
+	var keys [][]byte
+	var batch []ueu.Sealed
+	size := 0
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("pending"))
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, v := c.First(); k != nil && len(batch) < 64 && size+len(v) < 700000; k, v = c.Next() {
+			var s ueu.Sealed
+			if err := json.Unmarshal(v, &s); err != nil {
+				return err
+			}
+			keys, batch = append(keys, bytes.Clone(k)), append(batch, s)
+			size += len(v)
+		}
+		return nil
+	})
+	return keys, batch, err
+}
+
+// checkAck accepts only an unambiguous OTLP success.
+func checkAck(b []byte) error {
 	if len(bytes.TrimSpace(b)) == 0 {
-		return errors.New("empty acknowledgement; report retained")
+		return errors.New("empty acknowledgement; evidence retained")
 	}
 	var ack map[string]json.RawMessage
 	if json.Unmarshal(b, &ack) != nil || ack == nil {
-		return errors.New("invalid acknowledgement; report retained")
+		return errors.New("invalid acknowledgement; evidence retained")
 	}
 	if partial, ok := ack["partialSuccess"]; ok {
 		var p map[string]any
@@ -209,39 +324,60 @@ func post(ctx context.Context, h *http.Client, endpoint, token string, payload [
 			return errors.New("invalid partial acknowledgement")
 		}
 		if n, ok := p["rejectedLogRecords"]; ok && n != float64(0) && n != "0" {
-			return errors.New("partial rejection; report retained")
+			return errors.New("partial rejection; evidence retained")
 		}
 		if m, ok := p["errorMessage"]; ok && m != "" {
-			return errors.New("partial rejection; report retained")
+			return errors.New("partial rejection; evidence retained")
 		}
 	}
 	return nil
 }
 
-func flushQueue(ctx context.Context, db *bolt.DB, h *http.Client, endpoint, token string) error {
+func flushQueue(ctx context.Context, db *bolt.DB, h *http.Client, endpoint string, id agentauth.Identity) error {
 	for {
-		var key, payload []byte
-		err := db.View(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("pending"))
-			if b == nil {
-				return nil
-			}
-			k, v := b.Cursor().First()
-			key = bytes.Clone(k)
-			payload = bytes.Clone(v)
-			return nil
-		})
+		keys, batch, err := pending(db)
+		if err != nil || len(batch) == 0 {
+			return err
+		}
+		payload, err := agentauth.SignedBatch(id, "keen-posture", Version, batch)
 		if err != nil {
 			return err
 		}
-		if key == nil {
-			return nil
-		}
-		if err = post(ctx, h, endpoint, token, payload); err != nil {
+		res, err := agentauth.Post(ctx, h, endpoint, ueu.OperationLogs, payload, id, "keen-posture/"+Version)
+		if err != nil {
 			return err
 		}
-		if err = db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("pending")).Delete(key) }); err != nil {
+		if err = checkAck(res.Body); err != nil {
+			return err
+		}
+		if err = db.Update(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("pending"))
+			for _, k := range keys {
+				if err := b.Delete(k); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
+}
+
+func heartbeat(ctx context.Context, db *bolt.DB, h *http.Client, endpoint string, id agentauth.Identity) error {
+	queued, sequence := 0, int64(0)
+	db.View(func(tx *bolt.Tx) error {
+		if b := tx.Bucket([]byte("pending")); b != nil {
+			queued = b.Stats().KeyN
+		}
+		if m := tx.Bucket([]byte("meta")); m != nil {
+			var chain ueu.Chain
+			json.Unmarshal(m.Get([]byte("chain")), &chain)
+			sequence = chain.Sequence
+		}
+		return nil
+	})
+	body, _ := json.Marshal(map[string]any{"version": Version, "queued": queued, "chain_sequence": sequence, "updated_at": time.Now().UTC()})
+	_, err := agentauth.Post(ctx, h, agentauth.Base(endpoint)+"/v1/agents/heartbeat", ueu.OperationHeartbeat, body, id, "keen-posture/"+Version)
+	return err
 }
