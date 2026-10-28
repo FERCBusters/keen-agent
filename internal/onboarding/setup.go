@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"keen-agent/internal/agentauth"
+
+	"gopkg.in/yaml.v3"
 )
 
 // agentVersion identifies the setup helper in KEEN's request logs.
@@ -124,15 +126,52 @@ func Setup(ctx context.Context, r Request) int {
 	default:
 		return Storage
 	}
-	if b, e := os.ReadFile(configPath()); e == nil {
-		if !bytes.Equal(b, configBytes(r)) {
-			return Existing
-		}
-	} else if !os.IsNotExist(e) || writeNew(configPath(), configBytes(r)) != nil {
-		return Storage
+	if code := settleConfig(configPath(), configBytes(r), r.URL, writeNew); code != 0 {
+		return code
 	}
 	if activate(ctx) != nil {
 		return Service
+	}
+	return 0
+}
+
+// settleConfig writes the configuration for this KEEN instance. A
+// configuration an earlier version wrote for the same instance (KEEN Agent 0.1
+// named a token file) is replaced, and its token file removed; one for another
+// instance is left alone and reported.
+func settleConfig(path string, want []byte, endpoint string, write func(string, []byte) error) int {
+	b, e := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(e):
+		if write(path, want) != nil {
+			return Storage
+		}
+		return 0
+	case e != nil:
+		return Storage
+	case bytes.Equal(b, want):
+		return 0
+	}
+	var old struct {
+		Endpoint string `yaml:"endpoint"`
+	}
+	// YAML accepts both the JSON (Windows, macOS) and YAML (Linux) forms.
+	if yaml.Unmarshal(b, &old) != nil || old.Endpoint != endpoint {
+		return Existing
+	}
+	next := path + ".new"
+	if e := os.Remove(next); e != nil && !os.IsNotExist(e) {
+		return Storage
+	}
+	if write(next, want) != nil {
+		return Storage
+	}
+	if os.Rename(next, path) != nil {
+		os.Remove(next)
+		return Storage
+	}
+	if e := os.Remove(filepath.Join(filepath.Dir(path), "token")); e != nil && !os.IsNotExist(e) {
+		return Storage
 	}
 	return 0
 }

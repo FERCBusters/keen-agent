@@ -117,6 +117,15 @@ ID and bytes across retries. After delivery the companion sends a signed
 heartbeat with its version, queue size and chain position. A run has a
 five-minute deadline; retries wait for the next run.
 
+### Upgrading a workstation from 0.1
+
+Install the new package over the old one, choose **Move to key** on the
+device's card in KEEN, and run KEEN Setup with the same instance and the new
+code. Setup enrols the device's key, replaces the configuration 0.1 wrote for
+that instance and removes its token file. A configuration for another KEEN
+instance is left alone, and Setup reports it. Posture reports 0.1 had queued
+but not sent are dropped; the next hourly run measures the device again.
+
 ### Manual provisioning on macOS
 
 The package installs `/usr/local/libexec/keen-posture`, the launch daemon and

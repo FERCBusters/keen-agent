@@ -205,6 +205,9 @@ func Deliver(ctx context.Context, c Config, all []Observation, observedAt time.T
 		return errors.New("cannot lock posture queue")
 	}
 	defer db.Close()
+	if e = dropEarlierReports(db); e != nil {
+		return e
+	}
 	h := client()
 	defer h.CloseIdleConnections()
 	m, e := Manager(c, h)
@@ -283,6 +286,32 @@ func seal(db *bolt.DB, stream string, envelopes []map[string]any) error {
 			return err
 		}
 		return meta.Put([]byte("chain"), raw)
+	})
+}
+
+// dropEarlierReports removes reports an earlier version queued as whole OTLP
+// requests. They predate this identity and its chain and cannot be sealed as
+// they stand; the next run measures the device again.
+func dropEarlierReports(db *bolt.DB) error {
+	return db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("pending"))
+		if b == nil {
+			return nil
+		}
+		var keys [][]byte
+		c := b.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var s ueu.Sealed
+			if json.Unmarshal(v, &s) != nil || s.EvidenceID == "" || len(s.Canonical) == 0 {
+				keys = append(keys, bytes.Clone(k))
+			}
+		}
+		for _, k := range keys {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

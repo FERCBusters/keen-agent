@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -73,5 +75,49 @@ func TestEnrolmentRefusesUntrustedTLSAndRedirects(t *testing.T) {
 	}
 	if tr.Proxy != nil {
 		t.Fatal("environment proxy enabled")
+	}
+}
+
+func TestSetupReplacesAnEarlierConfigurationForTheSameInstance(t *testing.T) {
+	write := func(path string, b []byte) error { return os.WriteFile(path, b, 0600) }
+	endpoint := "https://keen.example/api/v1/otlp/logs"
+	want := []byte(`{"endpoint":"` + endpoint + `","interval_seconds":3600,"state_dir":"/x/state"}`)
+	for name, tc := range map[string]struct {
+		old   string
+		token bool
+		code  int
+	}{
+		"absent":            {"", false, 0},
+		"current":           {string(want), false, 0},
+		"0.1 json":          {`{"endpoint":"` + endpoint + `","interval_seconds":3600,"state_dir":"/x/state","token_file":"/x/token"}`, true, 0},
+		"0.1 yaml":          {"endpoint: \"" + endpoint + "\"\ntoken_file: /etc/keen-workstation/token\nstate_dir: /var/lib/keen-workstation\n", true, 0},
+		"another instance":  {`{"endpoint":"https://other.example/api/v1/otlp/logs","token_file":"/x/token"}`, true, Existing},
+		"unreadable config": {"{not json", false, Existing},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			if tc.old != "" {
+				os.WriteFile(path, []byte(tc.old), 0600)
+			}
+			if tc.token {
+				os.WriteFile(filepath.Join(dir, "token"), []byte("secret"), 0600)
+			}
+			if code := settleConfig(path, want, endpoint, write); code != tc.code {
+				t.Fatal(code)
+			}
+			got, _ := os.ReadFile(path)
+			_, tokenErr := os.Stat(filepath.Join(dir, "token"))
+			if tc.code == 0 {
+				if string(got) != string(want) || !os.IsNotExist(tokenErr) {
+					t.Fatalf("config %q, token %v", got, tokenErr)
+				}
+				if _, e := os.Stat(path + ".new"); !os.IsNotExist(e) {
+					t.Fatal("temporary configuration left behind")
+				}
+			} else if string(got) != tc.old || (tc.token && tokenErr != nil) {
+				t.Fatal("another instance's configuration was changed")
+			}
+		})
 	}
 }
