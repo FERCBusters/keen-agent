@@ -260,7 +260,25 @@ acknowledge evidence away, alter a grant or replace KEEN's key. KEEN replaces
 its encryption key every 30 days and erases old ones, so recorded traffic
 cannot later be opened with keys taken from KEEN. This protects traffic, not
 KEEN itself: whoever controls the KEEN server can read what it receives. See
-[the protocol](docs/evidence-format.md#11-agent-identity-and-transport). The private queue is not encrypted by the agent; use
+[the protocol](docs/evidence-format.md#11-agent-identity-and-transport).
+
+### Post-quantum cryptography
+
+Encryption is post-quantum; signatures are not yet.
+
+- **Confidentiality.** Each request's key comes from ML-KEM-768 (NIST's
+  post-quantum standard, FIPS 203) and X25519 together, so reading it means
+  breaking both, and bodies and KEEN's responses use AES-256-GCM. Traffic
+  recorded today cannot be decrypted by a quantum computer built later
+  ("harvest now, decrypt later").
+- **Authentication.** KEEN's identity key, the agent's key and every request,
+  batch and evidence signature are Ed25519, which a large quantum computer
+  could forge. A forgery only helps an attacker active at the time; recorded
+  traffic cannot be impersonated afterwards, and passing off forged evidence
+  as historical still needs write access to KEEN.
+- **TLS.** Since Go 1.24 the agent's TLS client also offers the hybrid
+  X25519MLKEM768 key exchange; a reverse proxy whose TLS library supports it
+  (for example OpenSSL 3.5 or later) adds a second post-quantum layer. The private queue is not encrypted by the agent; use
 disk encryption where required. A compromised host can still sign false
 evidence, so signatures establish origin and integrity, not truth.
 
