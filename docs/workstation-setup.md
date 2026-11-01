@@ -75,6 +75,12 @@ expires. To move a device to another KEEN identity or installation, stop the
 service, archive and remove its configuration and state directory, then run
 setup with a new code. Never copy a state directory to another device.
 
+The enrolment code ends with the fingerprint of KEEN's identity key, and setup
+refuses a server that cannot prove it holds that key. A device enrolled by
+KEEN Agent 0.2, or pinned to a KEEN identity key that has since been replaced,
+must be set up again the same way: setup reports it as enrolled elsewhere
+until its configuration and state directory are removed.
+
 Uninstalling the package stops and removes its service and setup app, and keeps
 the private configuration, identity and queued evidence for deliberate
 administrator cleanup. On macOS stop `system/net.keen.posture` before removing

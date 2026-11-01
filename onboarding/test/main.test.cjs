@@ -75,7 +75,7 @@ test("only the main setup frame can provision; codes stay out of child arguments
     Buffer,
   });
   await new Promise((r) => setImmediate(r));
-  const request = { url: "keen.example", code: "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" };
+  const request = { url: "keen.example", code: "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB" };
   const denied = await handler(
     {
       sender: window.webContents,

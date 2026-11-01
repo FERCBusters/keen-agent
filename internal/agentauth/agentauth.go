@@ -1,6 +1,8 @@
 // Package agentauth implements KEEN agent enrolment, key renewal and signed
 // requests. One Ed25519 key pair per agent authenticates every request and
-// signs the evidence; KEEN stores only public keys.
+// signs the evidence; KEEN stores only public keys. Every request is
+// encrypted to KEEN's pinned identity, and only responses sealed with the
+// request's own response key are believed (sealed.go).
 package agentauth
 
 import (
@@ -24,8 +26,9 @@ import (
 )
 
 var (
-	CodePattern      = regexp.MustCompile(`^kc_([0-9a-f-]{36})\.[A-Za-z0-9_-]{43}$`)
-	BootstrapPattern = regexp.MustCompile(`^ke_([0-9a-f-]{36})\.[A-Za-z0-9_-]{43}$`)
+	// Codes and bootstrap keys end with the fingerprint of KEEN's identity key.
+	CodePattern      = regexp.MustCompile(`^kc_([0-9a-f-]{36})\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{22}$`)
+	BootstrapPattern = regexp.MustCompile(`^ke_([0-9a-f-]{36})\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{22}$`)
 	noncePattern     = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 	agentIDPattern   = regexp.MustCompile(`^[0-9a-f-]{36}$`)
 	namePattern      = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$`)
@@ -53,7 +56,12 @@ type Identity struct {
 	Blocked         string    `json:"blocked,omitempty"`
 	Failures        int       `json:"failures,omitempty"`
 	NextAttempt     time.Time `json:"next_attempt,omitempty"`
+	// Server is KEEN's pinned identity and its current encryption key.
+	Server ServerKey `json:"server"`
 }
+
+// Pin records KEEN's verified identity and encryption key.
+func (i *Identity) Pin(k ServerKey) { i.Server = k }
 
 // Enrolled reports whether KEEN has bound this identity's key.
 func (i Identity) Enrolled() bool { return i.AgentID != "" && i.KeyID != "" }
@@ -110,6 +118,12 @@ func (i Identity) Validate() error {
 		if i.SubjectType != "pairwise" && i.SubjectType != "public" {
 			return errors.New("invalid subject type")
 		}
+		if i.Server.Identity == "" {
+			return errors.New("identity predates end-to-end encryption; purge the state directory and enrol again with a new code")
+		}
+		if err = i.Server.Validate(); err != nil {
+			return err
+		}
 	}
 	if i.RenewalNonce != "" {
 		if !noncePattern.MatchString(i.RenewalNonce) {
@@ -155,9 +169,25 @@ type HTTPError struct {
 
 func (e HTTPError) Error() string { return fmt.Sprintf("KEEN returned HTTP %d", e.Status) }
 
-// Permanent reports whether retrying cannot succeed without intervention.
+// Permanent reports whether retrying soon cannot succeed: a refusal rather
+// than a temporary condition. 421 means KEEN no longer accepts the encryption
+// key; fetching it again resolves that.
+//
+// Error responses are not sealed, so anything holding a certificate for
+// KEEN's address can send one. A refusal therefore never blocks the agent:
+// it waits RefusalBackoff before trying again and reports the refusal.
 func (e HTTPError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != 408 && e.Status != 429
+	return e.Status >= 400 && e.Status < 500 && e.Status != 408 && e.Status != 421 && e.Status != 429
+}
+
+// RefusalBackoff is how long the agent waits after a refusal (Permanent).
+const RefusalBackoff = time.Hour
+
+// NeedsKeyRefresh reports whether err asks for KEEN's key to be fetched again.
+func NeedsKeyRefresh(err error) bool {
+	var refresh KeyRefreshNeeded
+	var rejected HTTPError
+	return errors.As(err, &refresh) || (errors.As(err, &rejected) && rejected.Status == http.StatusMisdirectedRequest)
 }
 
 // RetryAfter parses a Retry-After header, capped at one hour.
@@ -180,13 +210,19 @@ func Client(transport *http.Transport) *http.Client {
 	return &http.Client{Timeout: 30 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects refused") }}
 }
 
-// Response is a bounded KEEN response body.
+// Response is a bounded KEEN response body, opened when it was sealed.
 type Response struct {
 	Status int
 	Body   []byte
+	// ServerKey is the encryption key KEEN names as current. It is a hint:
+	// a different value prompts a verified fetch of the server-key document.
+	ServerKey string
 }
 
-func do(h *http.Client, req *http.Request, userAgent string) (Response, error) {
+// do sends a request. With a response key, a success response must be
+// sealed with it; its plaintext is returned. Without one (the server-key
+// document, which is verified by signature) the body is returned as is.
+func do(h *http.Client, req *http.Request, userAgent string, responseKey []byte, operation string) (Response, error) {
 	req.Header.Set("User-Agent", userAgent)
 	res, err := h.Do(req)
 	if err != nil {
@@ -200,24 +236,46 @@ func do(h *http.Client, req *http.Request, userAgent string) (Response, error) {
 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
 		return Response{Status: res.StatusCode}, HTTPError{res.StatusCode, RetryAfter(res.Header.Get("Retry-After"))}
 	}
-	return Response{res.StatusCode, b}, nil
+	out := Response{Status: res.StatusCode, Body: b}
+	if v := res.Header.Get(KeyHeader); encryptionKeyPattern.MatchString(v) {
+		out.ServerKey = v
+	}
+	if responseKey == nil {
+		return out, nil
+	}
+	if strings.TrimSpace(strings.Split(res.Header.Get("Content-Type"), ";")[0]) != SealedResponseType {
+		return Response{Status: res.StatusCode}, UntrustedResponse{"not sealed"}
+	}
+	if out.Body, err = OpenResponse(responseKey, operation, res.StatusCode, b); err != nil {
+		return Response{Status: res.StatusCode}, err
+	}
+	return out, nil
 }
 
-// Post sends a request signed with the identity's current key.
+// Post sends a request encrypted to KEEN and signed with the identity's
+// current key, and returns KEEN's opened response.
 func Post(ctx context.Context, h *http.Client, url, operation string, body []byte, id Identity, userAgent string) (Response, error) {
 	priv, err := id.Key()
 	if err != nil || !id.Enrolled() {
 		return Response{}, errors.New("agent is not enrolled")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if !id.Server.Usable(time.Now()) {
+		return Response{}, KeyRefreshNeeded{"no current encryption key"}
+	}
+	wire, responseKey, err := Seal(id.Server, operation, id.KeyID, body)
+	if err != nil {
+		return Response{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(wire))
 	if err != nil {
 		return Response{}, errors.New("invalid endpoint")
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if err = ueu.SignRequest(req, body, operation, id.KeyID, priv, time.Now()); err != nil {
+	req.Header.Set("Content-Type", SealedType)
+	req.Header.Set(KeyHeader, id.Server.EncryptionKey)
+	if err = ueu.SignRequest(req, wire, operation, id.KeyID, priv, time.Now()); err != nil {
 		return Response{}, err
 	}
-	return do(h, req, userAgent)
+	return do(h, req, userAgent, responseKey, operation)
 }
 
 // Grant is KEEN's answer to an enrolment or renewal.
@@ -261,51 +319,67 @@ func publicKey(priv ed25519.PrivateKey) string {
 // Profile enrolment needs a name and the identity's saved enrolment nonce,
 // so a retried request after a lost response returns the same agent.
 // Each attempt proves possession of the key afresh.
-func Enroll(ctx context.Context, h *http.Client, id Identity, credential, userAgent string) (Grant, error) {
+//
+// It first fetches KEEN's server-key document and checks it against the
+// identity fingerprint the credential ends with; the request, credential
+// included, is then encrypted to KEEN, and the grant must open with the
+// request's response key. It returns the grant and KEEN's verified key.
+func Enroll(ctx context.Context, h *http.Client, id Identity, credential, userAgent string) (Grant, ServerKey, error) {
 	var g Grant
 	priv, err := id.Key()
 	if err != nil {
-		return g, err
+		return g, ServerKey{}, err
 	}
 	credential = strings.TrimSpace(credential)
-	body := map[string]any{"public_key": publicKey(priv)}
+	pinned, err := CredentialFingerprint(credential)
+	if err != nil {
+		return g, ServerKey{}, err
+	}
+	server, err := FetchServerKey(ctx, h, id.Endpoint, pinned, userAgent, time.Now())
+	if err != nil {
+		return g, ServerKey{}, err
+	}
+	body := map[string]any{"public_key": publicKey(priv), "credential": credential}
 	switch {
 	case CodePattern.MatchString(credential):
 	case BootstrapPattern.MatchString(credential):
 		if !namePattern.MatchString(id.Name) || !noncePattern.MatchString(id.EnrollmentNonce) {
-			return g, errors.New("profile enrolment needs a valid name and saved nonce")
+			return g, ServerKey{}, errors.New("profile enrolment needs a valid name and saved nonce")
 		}
 		body["name"], body["nonce"] = id.Name, id.EnrollmentNonce
-	default:
-		return g, errors.New("not an enrolment code or bootstrap key")
 	}
 	// Every attempt, retries included, signs a fresh proof: KEEN accepts each
 	// proof nonce once and only near its creation time, so a recorded request
 	// cannot be replayed to fetch the grant.
 	proofNonce, err := NewSecret()
 	if err != nil {
-		return g, err
+		return g, ServerKey{}, err
 	}
 	created := time.Now().Unix()
 	body["created"], body["proof_nonce"] = created, proofNonce
 	if body["proof"], err = proof(priv, map[string]any{"context": "keen-agent-enroll-v2", "created": created, "credential_sha256": credentialDigest(credential), "proof_nonce": proofNonce, "public_key": body["public_key"]}); err != nil {
-		return g, err
+		return g, ServerKey{}, err
 	}
 	encoded, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, Base(id.Endpoint)+"/v1/agents/enroll", bytes.NewReader(encoded))
+	wire, responseKey, err := Seal(server, OperationEnroll, "", encoded)
 	if err != nil {
-		return g, errors.New("invalid endpoint")
+		return g, ServerKey{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+credential)
-	req.Header.Set("Content-Type", "application/json")
-	res, err := do(h, req, userAgent)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, Base(id.Endpoint)+"/v1/agents/enroll", bytes.NewReader(wire))
 	if err != nil {
-		return g, err
+		return g, ServerKey{}, errors.New("invalid endpoint")
+	}
+	req.Header.Set("Content-Type", SealedType)
+	req.Header.Set(KeyHeader, server.EncryptionKey)
+	req.Header.Set("Keen-Agent-Operation", OperationEnroll)
+	res, err := do(h, req, userAgent, responseKey, OperationEnroll)
+	if err != nil {
+		return g, ServerKey{}, err
 	}
 	if json.Unmarshal(res.Body, &g) != nil {
-		return g, errors.New("invalid enrolment response")
+		return g, ServerKey{}, errors.New("invalid enrolment response")
 	}
-	return g, nil
+	return g, server, nil
 }
 
 // Renew asks KEEN to replace the current key with the pending renewal key.
@@ -383,9 +457,14 @@ func (i *Identity) Accept(g Grant, privateKey string, now time.Time) error {
 	return nil
 }
 
+var unpinnedCredential = regexp.MustCompile(`^k[ce]_[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$`)
+
 // ReadCredential trims and checks an enrolment code or bootstrap key.
 func ReadCredential(b []byte) (string, error) {
 	v := strings.TrimSpace(string(b))
+	if unpinnedCredential.MatchString(v) {
+		return "", errors.New("this enrolment code or bootstrap key was issued by a KEEN release without end-to-end encryption; issue a new one")
+	}
 	if !CodePattern.MatchString(v) && !BootstrapPattern.MatchString(v) {
 		return "", errors.New("invalid enrolment code or bootstrap key")
 	}

@@ -27,7 +27,9 @@ function validate(value) {
       "Use an HTTPS instance domain without a path, query or credentials.",
     );
   const code = value.code.trim();
-  if (!/^kc_[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/.test(code))
+  // The code ends with the fingerprint of KEEN's identity key, which the
+  // agent checks before it sends anything to the instance.
+  if (!/^kc_[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{22}$/.test(code))
     throw new Error(
       "Paste the single-use enrolment code KEEN created for this device.",
     );
@@ -35,7 +37,7 @@ function validate(value) {
 }
 const messages = {
   10: "The URL or enrolment code is invalid.",
-  11: "KEEN did not accept this enrolment. The code may be used or expired: ask your administrator for a new one. Also check the URL, network and certificate trust.",
+  11: "KEEN did not accept this enrolment, or the server could not prove it is the KEEN instance that created the code. The code may be used or expired: ask your administrator for a new one. Also check the URL, network and certificate trust.",
   12: "This workstation is already enrolled with a different KEEN instance. Ask your administrator to remove its protected configuration first.",
   13: "The protected configuration could not be saved. Check the installation and disk permissions. A stale setup.lock after a crash may need administrator removal.",
   14: "The device was enrolled, but the service could not be started. Check the system service logs, then retry with the same URL and code.",

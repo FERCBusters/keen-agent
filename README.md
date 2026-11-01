@@ -5,7 +5,8 @@ activity from server logs and, on workstations, measured security settings.
 Each item is a Universal Evidence Utility (UEU) envelope: a typed record named
 by an event type from an event catalogue, with pseudonymous subjects in place
 of account names, chained to the agent's previous evidence and signed with the
-agent's own Ed25519 key. KEEN checks every signature, envelope and chain
+agent's own Ed25519 key. Everything the agent sends is encrypted end to end to
+the KEEN that issued its enrolment code, not just to whatever terminates TLS. KEEN checks every signature, envelope and chain
 position, stores the evidence with its provenance and applies the
 organisation's framework mapping rules.
 
@@ -89,7 +90,9 @@ Download the signed installer (`keen-posture-<version>-windows-amd64.msi`,
 
 Enrolment generates the agent's key pair in `/var/lib/keen-agent/identity.json`
 (mode 0600) and binds its public key to the KEEN identity; the private key
-never leaves the machine. The agent renews its key before it expires. For
+never leaves the machine. The code ends with the fingerprint of KEEN's
+identity key: before sending anything, the agent checks that the server it
+reached holds that key, and refuses one that does not. The agent renews its key before it expires. For
 autoscaling fleets, use an enrollment profile's bootstrap key instead
 (`enrollment.bootstrap_key_file`; see [examples/autoscale.yaml](examples/autoscale.yaml)):
 each machine enrols itself with its own key.
@@ -99,6 +102,24 @@ systemd unit. Packages install `/usr/bin/keen-agent`, the unit and
 `/etc/keen-agent/config.yaml`; first installation never starts the service,
 upgrades keep configuration, identity and queue, and removal keeps them for
 deliberate cleanup.
+
+### Upgrade to 0.3
+
+KEEN Agent 0.3 encrypts every request to KEEN's own key and needs a KEEN
+release that supports it; neither talks to the other's earlier release.
+Codes and bootstrap keys from earlier KEEN releases carry no fingerprint, and
+identities enrolled by 0.2 pinned no KEEN key, so set each agent up afresh:
+
+1. Let 0.2 deliver what it has queued while KEEN is still on its earlier
+   release, if that matters to you (`keen-agent -command status`).
+2. Stop the service and remove the contents of the state directory
+   (`/var/lib/keen-agent`): identity, chain and queue. Anything still queued
+   is discarded.
+3. Upgrade the package, issue a new code (**Issue enrolment code** on the
+   agent's card) or a new bootstrap key, save it and enrol as above.
+
+The agent refuses to start with a 0.2 identity, and says why. The same
+applies to every agent if KEEN's identity key is ever replaced.
 
 ### Upgrade a server from 0.1
 
@@ -181,14 +202,26 @@ sources:
 
 Each envelope is sealed (evidence ID, chain position) and queued with its file
 offset or journal cursor in one synchronised bbolt transaction under
-`/var/lib/keen-agent`. Batches of up to 64 envelopes are signed and sent over
-verified HTTPS; acknowledged envelopes leave the queue. A crash before
-acknowledgement resends the same envelopes and KEEN deduplicates them.
+`/var/lib/keen-agent`. Batches of up to 64 envelopes are signed, encrypted to
+KEEN and sent over verified HTTPS; acknowledged envelopes leave the queue. A
+crash before acknowledgement resends the same envelopes and KEEN deduplicates
+them.
 
-- Network errors, 408, 429 and server errors retry with backoff, honouring
-  `Retry-After`. Redirects are refused and TLS is always verified.
-- Other 4xx responses pause delivery; envelopes stay queued and health reports
-  the pause.
+- An acknowledgement counts only if it is encrypted with the one-time key the
+  agent put inside that request, which only KEEN could read. Anything else,
+  including a `200` from a server that merely holds a valid certificate, leaves
+  the envelopes queued and is reported in local status.
+- Network errors, 408, 429, unverifiable responses and server errors retry
+  with backoff, honouring `Retry-After`. Redirects are refused and TLS is
+  always verified.
+- 421 means KEEN no longer holds the encryption key the request used (KEEN
+  makes a new one every 30 days); the agent fetches KEEN's current key,
+  checks it against the pinned identity, and sends again.
+- Other 4xx responses are refusals. Error responses are not encrypted, so a
+  refusal may not be KEEN's: the agent keeps the envelopes, waits an hour,
+  tries again, and reports the refusal in local status (`delivery_refused`,
+  `credential_last_error`). Refusals never block the agent; a revoked or
+  expired agent keeps retrying hourly until it is stopped or enrolled again.
 - `queue_mb` bounds the queue; at capacity collection pauses without advancing
   checkpoints. `retention_days` (default 0, keep) permits discarding old
   envelopes; every discard is itself sent as `evidence.records.discarded`.
@@ -216,7 +249,18 @@ The agent has no inbound listener, remote command channel, plugin loading or
 template execution. Its only child processes are `/usr/bin/journalctl` with
 fixed arguments and the read-only posture probes. Every request is signed with
 the agent's key and accepted once; every batch carries a signed manifest of
-its envelopes' hashes. The private queue is not encrypted by the agent; use
+its envelopes' hashes.
+
+Every request, the enrolment code included, is encrypted end to end to KEEN
+with HPKE (hybrid post-quantum MLKEM768-X25519, HKDF-SHA256, AES-256-GCM),
+to a key signed by the KEEN identity whose fingerprint ends the enrolment
+code. A reverse proxy, CDN, TLS-inspecting middlebox, or an impostor with a
+valid certificate for KEEN's hostname sees only ciphertext, and cannot
+acknowledge evidence away, alter a grant or replace KEEN's key. KEEN replaces
+its encryption key every 30 days and erases old ones, so recorded traffic
+cannot later be opened with keys taken from KEEN. This protects traffic, not
+KEEN itself: whoever controls the KEEN server can read what it receives. See
+[the protocol](docs/evidence-format.md#11-agent-identity-and-transport). The private queue is not encrypted by the agent; use
 disk encryption where required. A compromised host can still sign false
 evidence, so signatures establish origin and integrity, not truth.
 

@@ -97,8 +97,15 @@ func run() error {
 			fmt.Println("Already enrolled as agent " + manager.Identity().AgentID)
 			return nil
 		}
+		// The operator asked: try now, whatever an earlier refusal scheduled.
+		if err := manager.Unblock(); err != nil {
+			return err
+		}
 		ready, err := manager.Ready(context.Background(), time.Now())
 		if !ready {
+			if err == nil && manager.LastError() != "" {
+				err = errors.New(manager.LastError())
+			}
 			if err == nil {
 				err = errors.New("enrolment did not complete; retry later")
 			}
@@ -132,7 +139,7 @@ func run() error {
 		if err := manager.Unblock(); err != nil {
 			return err
 		}
-		fmt.Println("Credential retry enabled for the saved identity. Restart the service; revoked or expired keys still need a new enrolment code.")
+		fmt.Println("Credential retry enabled for the saved identity: any block or refusal backoff is cleared. Restart the service; revoked or expired keys still need a new enrolment code.")
 		return nil
 	case "run":
 	default:
@@ -153,6 +160,8 @@ func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error
 	nextReport := time.Now().Add(time.Minute)
 	failures := 0
 	blocked := false
+	refused := ""
+	lastCredentialErr := ""
 	status := map[string]string{}
 	nextCollect := time.Time{}
 	nextExpire := time.Time{}
@@ -165,7 +174,13 @@ func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error
 			if persistenceFailure(credentialErr) {
 				return credentialErr
 			}
-			log.Printf("credentials: %s", credentialErr)
+			// Ready is asked every second; log each distinct problem once.
+			if credentialErr.Error() != lastCredentialErr {
+				log.Printf("credentials: %s", credentialErr)
+			}
+			lastCredentialErr = credentialErr.Error()
+		} else {
+			lastCredentialErr = ""
 		}
 		id := manager.Identity()
 		if id.Blocked != "" {
@@ -214,9 +229,10 @@ func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error
 		drain := false
 		if ready && !blocked && time.Now().After(nextSend) {
 			before, _, _ := sp.stats()
-			e = send(c, sp, h, id)
+			e = send(c, sp, manager)
 			if e == nil {
 				failures = 0
+				refused = ""
 				after, _, _ := sp.stats()
 				if before > after {
 					delivered += before - after
@@ -235,15 +251,14 @@ func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error
 				var de deliveryError
 				if errors.As(e, &de) {
 					delay = max(delay, de.retry)
-					if de.status >= 400 && de.status < 500 && de.status != 408 && de.status != 429 {
-						blocked = true
-						if de.status == 401 || de.status == 403 {
-							if err := manager.Block("agent authentication rejected; administrator intervention required"); persistenceFailure(err) {
-								return err
-							}
-						}
+					// A refusal is unsealed and may not be KEEN's: wait,
+					// report it, and try again; never discard or block.
+					if (agentauth.HTTPError{Status: de.status}).Permanent() {
+						delay = max(delay, agentauth.RefusalBackoff)
+						refused = fmt.Sprintf("KEEN refused delivery (HTTP %d) at %s; records retained, retrying in %s", de.status, time.Now().UTC().Format(time.RFC3339), agentauth.RefusalBackoff)
 					}
 				}
+				// A partial success is sealed, so it is KEEN's own answer.
 				if strings.Contains(e.Error(), "partial success") {
 					blocked = true
 				}
@@ -277,14 +292,11 @@ func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error
 		}
 		if ready && id.Blocked == "" && time.Now().After(nextHealth) {
 			nextHealth = time.Now().Add(time.Minute)
-			if err := heartbeat(c, h, id, health); err != nil {
+			if err := heartbeat(c, manager, health); err != nil {
 				log.Printf("health: %s", err)
 				var de deliveryError
-				if errors.As(err, &de) && (de.status == 401 || de.status == 403) {
-					blocked = true
-					if err := manager.Block("agent authentication rejected; administrator intervention required"); persistenceFailure(err) {
-						return err
-					}
+				if errors.As(err, &de) && (agentauth.HTTPError{Status: de.status}).Permanent() {
+					nextHealth = time.Now().Add(agentauth.RefusalBackoff)
 				}
 			}
 		}
@@ -295,6 +307,13 @@ func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error
 		health["credential_blocked_reason"] = id.Blocked
 		health["credential_ready"] = ready && id.Blocked == ""
 		health["credential_next_attempt"] = id.NextAttempt
+		health["credential_last_error"] = manager.LastError()
+		health["delivery_refused"] = refused
+		health["keen_identity"] = id.Server.Identity
+		health["keen_encryption_key"] = id.Server.EncryptionKey
+		if !id.Server.NotAfter.IsZero() {
+			health["keen_encryption_key_not_after"] = id.Server.NotAfter
+		}
 		encoded, _ := json.MarshalIndent(health, "", "  ")
 		tmp := c.StateDir + "/status.json.tmp"
 		if e = os.WriteFile(tmp, encoded, 0600); e != nil {

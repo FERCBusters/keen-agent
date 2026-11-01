@@ -239,14 +239,12 @@ func Deliver(ctx context.Context, c Config, all []Observation, observedAt time.T
 		}
 		return e
 	}
-	if err = flushQueue(ctx, db, h, c.Endpoint, id); err != nil {
-		var rejected agentauth.HTTPError
-		if errors.As(err, &rejected) && (rejected.Status == 401 || rejected.Status == 403) {
-			m.Block("agent authentication rejected; administrator intervention required")
-		}
+	// A refusal is unsealed and may not be KEEN's, so it never blocks the
+	// identity; evidence stays queued for the next run.
+	if err = flushQueue(ctx, db, m, c.Endpoint); err != nil {
 		return err
 	}
-	return heartbeat(ctx, db, h, c.Endpoint, id)
+	return heartbeat(ctx, db, m, c.Endpoint)
 }
 
 func seal(db *bolt.DB, stream string, envelopes []map[string]any) error {
@@ -362,17 +360,19 @@ func checkAck(b []byte) error {
 	return nil
 }
 
-func flushQueue(ctx context.Context, db *bolt.DB, h *http.Client, endpoint string, id agentauth.Identity) error {
+// flushQueue sends queued evidence encrypted to KEEN. Records leave the
+// queue only after an acknowledgement that opens with the request's key.
+func flushQueue(ctx context.Context, db *bolt.DB, m *agentauth.Manager, endpoint string) error {
 	for {
 		keys, batch, err := pending(db)
 		if err != nil || len(batch) == 0 {
 			return err
 		}
-		payload, err := agentauth.SignedBatch(id, "keen-posture", Version, batch)
+		payload, err := agentauth.SignedBatch(m.Identity(), "keen-posture", Version, batch)
 		if err != nil {
 			return err
 		}
-		res, err := agentauth.Post(ctx, h, endpoint, ueu.OperationLogs, payload, id, "keen-posture/"+Version)
+		res, err := m.Post(ctx, endpoint, ueu.OperationLogs, payload)
 		if err != nil {
 			return err
 		}
@@ -393,7 +393,7 @@ func flushQueue(ctx context.Context, db *bolt.DB, h *http.Client, endpoint strin
 	}
 }
 
-func heartbeat(ctx context.Context, db *bolt.DB, h *http.Client, endpoint string, id agentauth.Identity) error {
+func heartbeat(ctx context.Context, db *bolt.DB, m *agentauth.Manager, endpoint string) error {
 	queued, sequence := 0, int64(0)
 	db.View(func(tx *bolt.Tx) error {
 		if b := tx.Bucket([]byte("pending")); b != nil {
@@ -407,6 +407,6 @@ func heartbeat(ctx context.Context, db *bolt.DB, h *http.Client, endpoint string
 		return nil
 	})
 	body, _ := json.Marshal(map[string]any{"version": Version, "queued": queued, "chain_sequence": sequence, "updated_at": time.Now().UTC()})
-	_, err := agentauth.Post(ctx, h, agentauth.Base(endpoint)+"/v1/agents/heartbeat", ueu.OperationHeartbeat, body, id, "keen-posture/"+Version)
+	_, err := m.Post(ctx, agentauth.Base(endpoint)+"/v1/agents/heartbeat", ueu.OperationHeartbeat, body)
 	return err
 }

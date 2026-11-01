@@ -1,7 +1,7 @@
 const test = require("node:test"),
   assert = require("node:assert/strict");
 const { validate, exitCode } = require("../validation.cjs");
-const code = "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const code = "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB";
 test("instance domain and enrolment code are normalised without exposing secrets", () => {
   assert.deepEqual(validate({ url: "keen.example ", code: ` ${code} ` }), {
     url: "https://keen.example",
@@ -19,6 +19,8 @@ test("instance domain and enrolment code are normalised without exposing secrets
     "short",
     "ka_6f8459a2-2768-41a4-94d5-a0cdcc2d7187." + "A".repeat(43),
     "ke_6f8459a2-2768-41a4-94d5-a0cdcc2d7187." + "A".repeat(43),
+    // A code without KEEN's identity fingerprint (KEEN before agent 0.3).
+    "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187." + "A".repeat(43),
     code + "\u0000",
     code.slice(0, -1) + " ",
   ])

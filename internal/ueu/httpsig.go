@@ -22,7 +22,11 @@ const (
 	OperationRenew     = "renew"
 )
 
-const signatureComponents = `("@method" "keen-agent-operation" "content-digest" "content-type")`
+// The body a signature covers is the request as encrypted to KEEN, and the
+// encryption key it names is covered too.
+const signatureComponents = `("@method" "keen-agent-operation" "keen-encryption-key" "content-digest" "content-type")`
+
+var encryptionKeyPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 // ContentDigest returns the RFC 9530 Content-Digest value for a body.
 func ContentDigest(body []byte) string {
@@ -35,9 +39,10 @@ func signatureParams(created int64, keyID, nonce string) string {
 }
 
 // SignatureBase builds the RFC 9421 signature base for KEEN's covered components.
-func SignatureBase(method, operation, digest, contentType, params string) string {
+func SignatureBase(method, operation, encryptionKey, digest, contentType, params string) string {
 	return `"@method": ` + strings.ToUpper(method) + "\n" +
 		`"keen-agent-operation": ` + operation + "\n" +
+		`"keen-encryption-key": ` + encryptionKey + "\n" +
 		`"content-digest": ` + digest + "\n" +
 		`"content-type": ` + contentType + "\n" +
 		`"@signature-params": ` + params
@@ -60,8 +65,12 @@ func SignRequest(req *http.Request, body []byte, operation, keyID string, priv e
 	if contentType == "" {
 		return errors.New("content type required before signing")
 	}
+	encryptionKey := req.Header.Get("Keen-Encryption-Key")
+	if !encryptionKeyPattern.MatchString(encryptionKey) {
+		return errors.New("encryption key identifier required before signing")
+	}
 	params := signatureParams(now.Unix(), keyID, nonce)
-	base := SignatureBase(req.Method, operation, digest, contentType, params)
+	base := SignatureBase(req.Method, operation, encryptionKey, digest, contentType, params)
 	req.Header.Set("Content-Digest", digest)
 	req.Header.Set("Keen-Agent-Operation", operation)
 	req.Header.Set("Signature-Input", "keen="+params)
@@ -69,7 +78,7 @@ func SignRequest(req *http.Request, body []byte, operation, keyID string, priv e
 	return nil
 }
 
-var signatureInput = regexp.MustCompile(`^keen=\("@method" "keen-agent-operation" "content-digest" "content-type"\);created=([0-9]{1,12});keyid="([0-9a-f-]{36}:[0-9a-f]{16})";nonce="([A-Za-z0-9_-]{22})";alg="ed25519"$`)
+var signatureInput = regexp.MustCompile(`^keen=\("@method" "keen-agent-operation" "keen-encryption-key" "content-digest" "content-type"\);created=([0-9]{1,12});keyid="([0-9a-f-]{36}:[0-9a-f]{16})";nonce="([A-Za-z0-9_-]{22})";alg="ed25519"$`)
 var signatureValue = regexp.MustCompile(`^keen=:([A-Za-z0-9+/]{86}==):$`)
 
 // SignedRequest is what a verifier learns from KEEN's signature headers.
@@ -84,7 +93,7 @@ func VerifyRequest(h http.Header, method, operation string, body []byte, lookup 
 	var r SignedRequest
 	m := signatureInput.FindStringSubmatch(h.Get("Signature-Input"))
 	s := signatureValue.FindStringSubmatch(h.Get("Signature"))
-	if m == nil || s == nil || h.Get("Keen-Agent-Operation") != operation {
+	if m == nil || s == nil || h.Get("Keen-Agent-Operation") != operation || !encryptionKeyPattern.MatchString(h.Get("Keen-Encryption-Key")) {
 		return r, errors.New("missing or malformed signature")
 	}
 	created, _ := strconv.ParseInt(m[1], 10, 64)
@@ -101,7 +110,7 @@ func VerifyRequest(h http.Header, method, operation string, body []byte, lookup 
 		return r, err
 	}
 	sig, _ := base64.StdEncoding.DecodeString(s[1])
-	base := SignatureBase(method, operation, digest, h.Get("Content-Type"), strings.TrimPrefix(h.Get("Signature-Input"), "keen="))
+	base := SignatureBase(method, operation, h.Get("Keen-Encryption-Key"), digest, h.Get("Content-Type"), strings.TrimPrefix(h.Get("Signature-Input"), "keen="))
 	if !ed25519.Verify(pub, []byte(base), sig) {
 		return r, fmt.Errorf("signature invalid")
 	}

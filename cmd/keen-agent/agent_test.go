@@ -17,12 +17,27 @@ import (
 	"time"
 
 	"keen-agent/internal/agentauth"
+	"keen-agent/internal/keentest"
 
 	bolt "go.etcd.io/bbolt"
 	"keen-agent/internal/ueu"
 )
 
 const testAgentID = "6f8459a2-2768-41a4-94d5-a0cdcc2d7187"
+
+// testKEEN holds the keys of the KEEN the test identities pin.
+var testKEEN = keentest.New()
+
+// memoryStore keeps a test identity in memory.
+type memoryStore struct{ id agentauth.Identity }
+
+func (m *memoryStore) Load() (agentauth.Identity, error) { return m.id, nil }
+func (m *memoryStore) Save(id agentauth.Identity) error  { m.id = id; return nil }
+
+// testManager sends as id through h.
+func testManager(id agentauth.Identity, h *http.Client) *agentauth.Manager {
+	return agentauth.NewManager(&memoryStore{id}, id, h, "test", nil)
+}
 
 // testIdentity is an enrolled identity whose KEEN ceiling allows all modes.
 func testIdentity(t *testing.T, endpoint string) agentauth.Identity {
@@ -36,6 +51,11 @@ func testIdentity(t *testing.T, endpoint string) agentauth.Identity {
 	id.KeyID = ueu.KeyID(testAgentID, priv.Public().(ed25519.PublicKey))
 	id.ExpiresAt, id.RenewAt = time.Now().Add(90*24*time.Hour), time.Now().Add(80*24*time.Hour)
 	id.SubjectType, id.Ceiling = "pairwise", "all_lines"
+	server, err := agentauth.VerifyServerKey(testKEEN.Document(), testKEEN.Fingerprint, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id.Pin(server)
 	if err = id.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -244,13 +264,14 @@ func TestAuditInterleavingAndOutcome(t *testing.T) {
 	}
 }
 
-// fakeReceiver verifies request and batch signatures as KEEN does.
+// fakeReceiver opens sealed requests and verifies request and batch
+// signatures as KEEN does.
 type fakeReceiver struct {
 	t       *testing.T
 	pub     ed25519.PublicKey
 	keyID   string
 	bodies  [][]string
-	replies []func(http.ResponseWriter)
+	replies []func(http.ResponseWriter, keentest.Opened)
 }
 
 func (f *fakeReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -266,6 +287,13 @@ func (f *fakeReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		return
 	}
+	opened, refused := testKEEN.Open(r, body, ueu.OperationLogs, f.keyID)
+	if refused != 0 {
+		f.t.Errorf("sealed request refused: %d", refused)
+		w.WriteHeader(refused)
+		return
+	}
+	body = opened.Body
 	var doc struct {
 		ResourceLogs []struct {
 			Resource struct {
@@ -298,10 +326,10 @@ func (f *fakeReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	f.bodies = append(f.bodies, envelopes)
 	reply := f.replies[min(len(f.bodies)-1, len(f.replies)-1)]
-	reply(w)
+	reply(w, opened)
 }
 
-func receiver(t *testing.T, id agentauth.Identity, replies ...func(http.ResponseWriter)) (*fakeReceiver, *httptest.Server) {
+func receiver(t *testing.T, id agentauth.Identity, replies ...func(http.ResponseWriter, keentest.Opened)) (*fakeReceiver, *httptest.Server) {
 	priv, _ := id.Key()
 	f := &fakeReceiver{t: t, pub: priv.Public().(ed25519.PublicKey), keyID: id.KeyID, replies: replies}
 	s := httptest.NewTLSServer(f)
@@ -309,11 +337,21 @@ func receiver(t *testing.T, id agentauth.Identity, replies ...func(http.Response
 	return f, s
 }
 
-func status(code int) func(http.ResponseWriter) {
-	return func(w http.ResponseWriter) { w.WriteHeader(code) }
+func status(code int) func(http.ResponseWriter, keentest.Opened) {
+	return func(w http.ResponseWriter, _ keentest.Opened) { w.WriteHeader(code) }
 }
-func ack(body string) func(http.ResponseWriter) {
-	return func(w http.ResponseWriter) { w.Write([]byte(body)) }
+
+// ack answers as KEEN does: sealed with the request's response key.
+func ack(body string) func(http.ResponseWriter, keentest.Opened) {
+	return func(w http.ResponseWriter, o keentest.Opened) { testKEEN.Reply(w, o, 200, []byte(body)) }
+}
+
+// forged answers 200 as an impostor with a valid certificate could.
+func forged(body string) func(http.ResponseWriter, keentest.Opened) {
+	return func(w http.ResponseWriter, _ keentest.Opened) {
+		w.Header().Set("Content-Type", keentest.SealedResponseType)
+		w.Write([]byte(body))
+	}
 }
 
 func TestLostAckReplaysTheSameEvidence(t *testing.T) {
@@ -323,10 +361,11 @@ func TestLostAckReplaysTheSameEvidence(t *testing.T) {
 	f, server := receiver(t, id, status(503), ack("{}"))
 	id.Endpoint = server.URL + "/api/v1/otlp/logs"
 	c := Config{Endpoint: id.Endpoint}
-	if send(c, s, server.Client(), id) == nil {
+	m := testManager(id, server.Client())
+	if send(c, s, m) == nil {
 		t.Fatal("expected retry")
 	}
-	if err := send(c, s, server.Client(), id); err != nil {
+	if err := send(c, s, m); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.bodies) != 2 || strings.Join(f.bodies[0], "") != strings.Join(f.bodies[1], "") {
@@ -343,7 +382,7 @@ func TestPermanentRejectionKeepsRecords(t *testing.T) {
 	id := testIdentity(t, "")
 	_, server := receiver(t, id, status(401))
 	id.Endpoint = server.URL + "/api/v1/otlp/logs"
-	err := send(Config{Endpoint: id.Endpoint}, s, server.Client(), id)
+	err := send(Config{Endpoint: id.Endpoint}, s, testManager(id, server.Client()))
 	var de deliveryError
 	if !errors.As(err, &de) || de.status != 401 {
 		t.Fatal(err)
@@ -361,13 +400,35 @@ func TestInvalidOrPartialAckRetainsRecords(t *testing.T) {
 			id := testIdentity(t, "")
 			_, server := receiver(t, id, ack(body))
 			id.Endpoint = server.URL + "/api/v1/otlp/logs"
-			if err := send(Config{Endpoint: id.Endpoint}, s, server.Client(), id); err == nil {
+			if err := send(Config{Endpoint: id.Endpoint}, s, testManager(id, server.Client())); err == nil {
 				t.Fatal("bad acknowledgement accepted")
 			}
 			if n, _, _ := s.stats(); n != 1 {
 				t.Fatal("record discarded")
 			}
 		})
+	}
+}
+
+// An impostor holding a valid certificate cannot acknowledge evidence away.
+func TestForgedAcknowledgementsKeepRecords(t *testing.T) {
+	for _, body := range []string{"{}", strings.Repeat("A", 64)} {
+		s := testSpool(t)
+		s.add(envelopesFor(t, s, rawSource, event()), "", nil)
+		id := testIdentity(t, "")
+		_, server := receiver(t, id, forged(body))
+		id.Endpoint = server.URL + "/api/v1/otlp/logs"
+		err := send(Config{Endpoint: id.Endpoint}, s, testManager(id, server.Client()))
+		if !errors.As(err, new(agentauth.UntrustedResponse)) {
+			t.Fatal(err)
+		}
+		if n, _, _ := s.stats(); n != 1 {
+			t.Fatal("record discarded on a forged acknowledgement")
+		}
+		var de deliveryError
+		if errors.As(err, &de) {
+			t.Fatal("a forged acknowledgement must not pause delivery as a rejection")
+		}
 	}
 }
 

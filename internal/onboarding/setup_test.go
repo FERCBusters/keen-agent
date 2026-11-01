@@ -2,6 +2,7 @@ package onboarding
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"keen-agent/internal/agentauth"
@@ -12,6 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"keen-agent/internal/keentest"
+	"keen-agent/internal/ueu"
 )
 
 func TestEndpoint(t *testing.T) {
@@ -28,7 +33,7 @@ func TestEndpoint(t *testing.T) {
 	}
 }
 
-const testCode = "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+const testCode = "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB"
 
 func TestRequestLimits(t *testing.T) {
 	good := `{"url":"keen.example","code":"` + testCode + `"}`
@@ -37,6 +42,7 @@ func TestRequestLimits(t *testing.T) {
 		t.Fatal(e)
 	}
 	for _, bad := range []string{good + good, good + " trailing", `{"url":"keen.example","code":"short"}`,
+		`{"url":"keen.example","code":"` + testCode[:len(testCode)-23] + `"}`,
 		`{"url":"keen.example","token":"` + testCode + `"}`, `{"url":"keen.example","code":"ke_` + testCode[3:] + `"}`,
 		`{"url":"keen.example","code":"` + testCode + `","command":"sh"}`, strings.Repeat(" ", 32769)} {
 		if _, e := Decode(strings.NewReader(bad)); e == nil {
@@ -55,7 +61,7 @@ func TestEnrolmentRefusesUntrustedTLSAndRedirects(t *testing.T) {
 	id, _ := agentauth.New(s.URL + "/api/v1/otlp/logs")
 	h := client()
 	defer h.CloseIdleConnections()
-	if _, e := agentauth.Enroll(context.Background(), h, id, testCode, "test"); e == nil || requests != 0 {
+	if _, _, e := agentauth.Enroll(context.Background(), h, id, testCode, "test"); e == nil || requests != 0 {
 		t.Fatal("untrusted TLS accepted")
 	}
 	pool := x509.NewCertPool()
@@ -67,10 +73,10 @@ func TestEnrolmentRefusesUntrustedTLSAndRedirects(t *testing.T) {
 	}
 	wrong := id
 	wrong.Endpoint = "https://wrong-host.invalid/api/v1/otlp/logs"
-	if _, e := agentauth.Enroll(context.Background(), h, wrong, testCode, "test"); e == nil || requests != 0 {
+	if _, _, e := agentauth.Enroll(context.Background(), h, wrong, testCode, "test"); e == nil || requests != 0 {
 		t.Fatal("wrong TLS hostname accepted")
 	}
-	if _, e := agentauth.Enroll(context.Background(), h, id, testCode, "test"); e == nil || requests != 1 {
+	if _, _, e := agentauth.Enroll(context.Background(), h, id, testCode, "test"); e == nil || requests != 1 {
 		t.Fatal("redirect followed", e)
 	}
 	if tr.Proxy != nil {
@@ -119,5 +125,37 @@ func TestSetupReplacesAnEarlierConfigurationForTheSameInstance(t *testing.T) {
 				t.Fatal("another instance's configuration was changed")
 			}
 		})
+	}
+}
+
+func TestSetupReusesOnlyAnIdentityPinnedToTheCodesKEEN(t *testing.T) {
+	keen := keentest.New()
+	endpoint := "https://keen.example/api/v1/otlp/logs"
+	id, _ := agentauth.New(endpoint)
+	key, _ := id.Key()
+	id.AgentID = "6f8459a2-2768-41a4-94d5-a0cdcc2d7187"
+	id.KeyID = ueu.KeyID(id.AgentID, key.Public().(ed25519.PublicKey))
+	id.ExpiresAt, id.SubjectType, id.Ceiling = time.Now().Add(time.Hour), "pairwise", "events"
+	server, err := agentauth.VerifyServerKey(keen.Document(), keen.Fingerprint, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id.Pin(server)
+	same := Request{URL: endpoint, Code: keen.Credential("kc", id.AgentID)}
+	if !reusable(id, same) {
+		t.Fatal("identity for this KEEN not reused")
+	}
+	for name, r := range map[string]Request{
+		"another KEEN identity": {URL: endpoint, Code: keentest.New().Credential("kc", id.AgentID)},
+		"another instance":      {URL: "https://other.example/api/v1/otlp/logs", Code: same.Code},
+	} {
+		if reusable(id, r) {
+			t.Error(name, "reused")
+		}
+	}
+	unpinned := id
+	unpinned.Server = agentauth.ServerKey{}
+	if reusable(unpinned, same) {
+		t.Fatal("an identity enrolled before end-to-end encryption was reused")
 	}
 }

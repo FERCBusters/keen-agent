@@ -214,7 +214,11 @@ func TestRequestSignatureBindsOperationBodyAndTime(t *testing.T) {
 	keyID := KeyID("4f1c9a2e-0000-4000-8000-000000000001", pub)
 	body := []byte(`{"ok":true}`)
 	req, _ := http.NewRequest("POST", "https://keen.example/api/v1/agents/heartbeat", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/vnd.keen.sealed")
+	if err := SignRequest(req, body, OperationHeartbeat, keyID, priv, fixed); err == nil {
+		t.Fatal("signed without naming the encryption key")
+	}
+	req.Header.Set("Keen-Encryption-Key", "0123456789abcdef")
 	if err := SignRequest(req, body, OperationHeartbeat, keyID, priv, fixed); err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +238,12 @@ func TestRequestSignatureBindsOperationBodyAndTime(t *testing.T) {
 		},
 		"method": func() error {
 			_, e := VerifyRequest(req.Header, "PUT", OperationHeartbeat, body, lookup, fixed)
+			return e
+		},
+		"encryption key": func() error {
+			moved := req.Header.Clone()
+			moved.Set("Keen-Encryption-Key", "fedcba9876543210")
+			_, e := VerifyRequest(moved, "POST", OperationHeartbeat, body, lookup, fixed)
 			return e
 		},
 	} {
@@ -266,8 +276,11 @@ func TestVectors(t *testing.T) {
 	manifest, _ := Manifest(p.InstanceID, keyID, fixed, []Sealed{s})
 	params := signatureParams(fixed.Unix(), keyID, "AAAAAAAAAAAAAAAAAAAAAA")
 	body := []byte(`{"version":"0.2.0"}`)
-	base := SignatureBase("POST", OperationHeartbeat, ContentDigest(body), "application/json", params)
+	const encryptionKeyID = "0123456789abcdef"
+	base := SignatureBase("POST", OperationHeartbeat, encryptionKeyID, ContentDigest(body), "application/vnd.keen.sealed", params)
+	transport := transportVectors(t, keyID)
 	vectors := map[string]any{
+		"encryption_key_id":  encryptionKeyID,
 		"seed_hex":           strings.ToLower(hexOf(seed)),
 		"public_key":         base64.RawURLEncoding.EncodeToString(pub),
 		"key_id":             keyID,
@@ -285,9 +298,24 @@ func TestVectors(t *testing.T) {
 		"signature_base":     base,
 		"signature":          "keen=:" + base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(base))) + ":",
 	}
+	for k, v := range transport {
+		vectors[k] = v
+	}
+	path := "testdata/vectors.json"
+	// HPKE encryption is randomised: a sealed request is made only when the
+	// vectors are regenerated; otherwise the saved one must still open.
+	var saved map[string]any
+	if b, err := os.ReadFile(path); err == nil {
+		json.Unmarshal(b, &saved)
+	}
+	wire, ok := saved["sealed_request"].(string)
+	if os.Getenv("UPDATE_VECTORS") == "1" || !ok {
+		wire = sealVector(t, transport)
+	}
+	openVector(t, transport, wire)
+	vectors["sealed_request"] = wire
 	got, _ := json.MarshalIndent(vectors, "", "  ")
 	got = append(got, '\n')
-	path := "testdata/vectors.json"
 	if os.Getenv("UPDATE_VECTORS") == "1" {
 		if err := os.WriteFile(path, got, 0644); err != nil {
 			t.Fatal(err)

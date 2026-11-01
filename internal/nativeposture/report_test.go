@@ -8,6 +8,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 	"io"
 	"keen-agent/internal/agentauth"
+	"keen-agent/internal/keentest"
 	"keen-agent/internal/ueu"
 	"net/http"
 	"net/http/httptest"
@@ -116,6 +117,12 @@ func TestQueueSignsRetriesAndAcknowledges(t *testing.T) {
 	pub := priv.Public().(ed25519.PublicKey)
 	id.AgentID, id.KeyID = "6f8459a2-2768-41a4-94d5-a0cdcc2d7187", ueu.KeyID("6f8459a2-2768-41a4-94d5-a0cdcc2d7187", pub)
 	id.ExpiresAt, id.SubjectType, id.Ceiling = time.Now().Add(time.Hour), "pairwise", "events"
+	keen := keentest.New()
+	server, e := agentauth.VerifyServerKey(keen.Document(), keen.Fingerprint, time.Now())
+	if e != nil {
+		t.Fatal(e)
+	}
+	id.Pin(server)
 	db, e := bolt.Open(filepath.Join(t.TempDir(), "queue.db"), 0600, nil)
 	if e != nil {
 		t.Fatal(e)
@@ -126,37 +133,51 @@ func TestQueueSignsRetriesAndAcknowledges(t *testing.T) {
 	if e = seal(db, id.AgentID, envs); e != nil {
 		t.Fatal(e)
 	}
-	fail := true
+	reply := "fail"
 	var seen []string
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	receiver := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		if _, err := ueu.VerifyRequest(r.Header, "POST", ueu.OperationLogs, b, func(string) (ed25519.PublicKey, error) { return pub, nil }, time.Now()); err != nil {
 			t.Error(err)
 		}
-		seen = append(seen, string(b))
-		if fail {
-			w.WriteHeader(503)
-			return
+		opened, refused := keen.Open(r, b, ueu.OperationLogs, id.KeyID)
+		if refused != 0 {
+			t.Error("sealed request refused", refused)
 		}
-		w.Write([]byte(`{}`))
+		seen = append(seen, string(opened.Body))
+		switch reply {
+		case "fail":
+			w.WriteHeader(503)
+		case "forged":
+			// An impostor with a certificate cannot acknowledge evidence away.
+			w.Header().Set("Content-Type", keentest.SealedResponseType)
+			w.Write([]byte(`{}`))
+		default:
+			keen.Reply(w, opened, 200, []byte(`{}`))
+		}
 	}))
-	defer server.Close()
-	endpoint := server.URL + "/api/v1/otlp/logs"
-	if e = flushQueue(context.Background(), db, server.Client(), endpoint, id); e == nil {
+	defer receiver.Close()
+	endpoint := receiver.URL + "/api/v1/otlp/logs"
+	m := agentauth.NewManager(nil, id, receiver.Client(), "test", nil)
+	if e = flushQueue(context.Background(), db, m, endpoint); e == nil {
 		t.Fatal("expected failure")
+	}
+	reply = "forged"
+	if e = flushQueue(context.Background(), db, m, endpoint); !errors.As(e, new(agentauth.UntrustedResponse)) {
+		t.Fatal(e)
 	}
 	_, batch, _ := pending(db)
 	if len(batch) != 2 {
 		t.Fatal("failed delivery lost evidence")
 	}
-	fail = false
-	if e = flushQueue(context.Background(), db, server.Client(), endpoint, id); e != nil {
+	reply = "ack"
+	if e = flushQueue(context.Background(), db, m, endpoint); e != nil {
 		t.Fatal(e)
 	}
-	if _, batch, _ = pending(db); len(batch) != 0 || len(seen) != 2 {
+	if _, batch, _ = pending(db); len(batch) != 0 || len(seen) != 3 {
 		t.Fatal("queue not drained")
 	}
-	for _, s := range []string{seen[0], seen[1]} {
+	for _, s := range seen {
 		if !strings.Contains(s, batch0(t, envs)) {
 			t.Fatal("retry changed the evidence")
 		}

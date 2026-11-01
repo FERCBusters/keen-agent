@@ -59,7 +59,8 @@ func signedBatch(id agentauth.Identity, records []record) ([]byte, error) {
 	return agentauth.SignedBatch(id, "keen-agent", version, sealed)
 }
 
-func send(c Config, sp *Spool, h *http.Client, id agentauth.Identity) error {
+func send(c Config, sp *Spool, m *agentauth.Manager) error {
+	id := m.Identity()
 	records, e := sp.batch()
 	if e != nil || len(records) == 0 {
 		return e
@@ -75,7 +76,9 @@ func send(c Config, sp *Spool, h *http.Client, id agentauth.Identity) error {
 	if len(payload) > 900000 {
 		return deliveryError{413, 0}
 	}
-	res, e := agentauth.Post(context.Background(), h, c.Endpoint, ueu.OperationLogs, payload, id, "keen-agent/"+version)
+	// The payload is encrypted to KEEN; only an acknowledgement that opens
+	// with this request's response key removes records from the queue.
+	res, e := m.Post(context.Background(), c.Endpoint, ueu.OperationLogs, payload)
 	if e != nil {
 		if strings.HasPrefix(e.Error(), "request failed") {
 			return errors.New("delivery failed (network/TLS); records retained")
@@ -101,12 +104,12 @@ func send(c Config, sp *Spool, h *http.Client, id agentauth.Identity) error {
 	return sp.ack(ids)
 }
 
-func heartbeat(c Config, h *http.Client, id agentauth.Identity, health map[string]any) error {
+func heartbeat(c Config, m *agentauth.Manager, health map[string]any) error {
 	payload, err := json.Marshal(health)
 	if err != nil {
 		return err
 	}
-	_, err = agentauth.Post(context.Background(), h, agentauth.Base(c.Endpoint)+"/v1/agents/heartbeat", ueu.OperationHeartbeat, payload, id, "keen-agent/"+version)
+	_, err = m.Post(context.Background(), agentauth.Base(c.Endpoint)+"/v1/agents/heartbeat", ueu.OperationHeartbeat, payload)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "request failed") {
 			return errors.New("health delivery failed")

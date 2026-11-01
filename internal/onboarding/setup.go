@@ -100,8 +100,10 @@ func Setup(ctx context.Context, r Request) int {
 	id, e := store.Load()
 	switch {
 	case e == nil && id.Enrolled():
-		// Retrying after a service error is safe; another instance needs removal first.
-		if id.Endpoint != r.URL {
+		// Retrying after a service error is safe; another instance, or an
+		// identity pinned to another KEEN identity key (or none: enrolled
+		// before end-to-end encryption), needs removal first.
+		if !reusable(id, r) {
 			return Existing
 		}
 	case e == nil || os.IsNotExist(e):
@@ -113,13 +115,14 @@ func Setup(ctx context.Context, r Request) int {
 		}
 		h := client()
 		defer h.CloseIdleConnections()
-		grant, e := agentauth.Enroll(ctx, h, id, r.Code, "keen-setup/"+agentVersion)
+		grant, server, e := agentauth.Enroll(ctx, h, id, r.Code, "keen-setup/"+agentVersion)
 		if e != nil {
 			return Connection
 		}
 		if id.Accept(grant, id.PrivateKey, time.Now()) != nil {
 			return Connection
 		}
+		id.Pin(server)
 		if store.Save(id) != nil {
 			return Storage
 		}
@@ -133,6 +136,13 @@ func Setup(ctx context.Context, r Request) int {
 		return Service
 	}
 	return 0
+}
+
+// reusable reports whether an enrolled identity belongs to the KEEN that
+// issued this code: the same endpoint and the same pinned identity key.
+func reusable(id agentauth.Identity, r Request) bool {
+	pinned, err := agentauth.CredentialFingerprint(r.Code)
+	return err == nil && id.Endpoint == r.URL && id.Validate() == nil && id.Server.Identity == pinned
 }
 
 // settleConfig writes the configuration for this KEEN instance. A

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"keen-agent/internal/keentest"
 	"keen-agent/internal/ueu"
 )
 
@@ -42,44 +43,89 @@ func (m *memoryStore) Save(id Identity) error {
 
 const agentID = "6f8459a2-2768-41a4-94d5-a0cdcc2d7187"
 
-// fakeKEEN verifies proofs and request signatures like KEEN does.
+// fakeKEEN opens sealed requests and verifies proofs and request signatures
+// like KEEN does, and seals its answers.
 type fakeKEEN struct {
 	t        *testing.T
+	keen     *keentest.KEEN
 	keys     map[string]ed25519.PublicKey
 	nonces   map[string]string
 	proofs   map[string]bool
 	status   int
 	enrolled int
 	renewed  int
+	paths    []string
+	// impostor answers 200 without KEEN's keys.
+	impostor string
 }
 
-func (f *fakeKEEN) grant(w http.ResponseWriter, pub string, profile string) {
+func (f *fakeKEEN) grant(w http.ResponseWriter, o keentest.Opened, status int, pub string, profile string) {
 	raw, _ := base64.RawURLEncoding.DecodeString(pub)
 	key := ed25519.PublicKey(raw)
 	kid := ueu.KeyID(agentID, key)
 	f.keys[kid] = key
-	json.NewEncoder(w).Encode(map[string]any{
+	payload, _ := json.Marshal(map[string]any{
 		"agent":                 map[string]any{"id": agentID, "name": "host-1", "agent_type": "server", "enrollment_profile_id": profile, "expires_at": time.Now().Add(90 * 24 * time.Hour).UTC().Format("2006-01-02T15:04:05.999999"), "enabled": true},
 		"key_id":                kid,
 		"subject":               map[string]any{"type": "pairwise"},
 		"evidence_mode_ceiling": "events_with_lines",
 		"catalogue":             map[string]any{"id": "keen", "version": "2026.10"},
 	})
+	f.keen.Reply(w, o, status, payload)
 }
 
 func (f *fakeKEEN) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.paths = append(f.paths, r.URL.Path)
 	body, _ := io.ReadAll(r.Body)
+	if r.URL.Path == "/api/v1/agents/server-key" {
+		f.keen.ServeKey(w)
+		return
+	}
 	if f.status != 0 {
 		w.WriteHeader(f.status)
 		return
 	}
+	if f.impostor != "" {
+		w.Header().Set("Content-Type", SealedResponseType)
+		w.Write([]byte(f.impostor))
+		return
+	}
+	agentKey := ""
+	operation := OperationEnroll
+	if r.URL.Path == "/api/v1/agents/renew" {
+		operation = ueu.OperationRenew
+		signed, err := ueu.VerifyRequest(r.Header, "POST", ueu.OperationRenew, body, func(k string) (ed25519.PublicKey, error) {
+			if key, ok := f.keys[k]; ok {
+				return key, nil
+			}
+			return nil, errors.New("unknown key")
+		}, time.Now())
+		if err != nil {
+			w.WriteHeader(401)
+			return
+		}
+		agentKey = signed.KeyID
+	}
+	opened, refused := f.keen.Open(r, body, operation, agentKey)
+	if refused != 0 {
+		w.WriteHeader(refused)
+		return
+	}
+	body = opened.Body
 	var req map[string]string
 	json.Unmarshal(body, &req)
 	pubRaw, _ := base64.RawURLEncoding.DecodeString(req["public_key"])
 	proof, _ := base64.RawURLEncoding.DecodeString(req["proof"])
 	switch r.URL.Path {
 	case "/api/v1/agents/enroll":
-		credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if len(pubRaw) != ed25519.PublicKeySize {
+			w.WriteHeader(400)
+			return
+		}
+		credential := req["credential"]
+		if r.Header.Get("Authorization") != "" {
+			f.t.Error("credential sent outside the sealed body")
+		}
 		sum := sha256.Sum256([]byte(credential))
 		var stamp struct {
 			Created int64 `json:"created"`
@@ -107,32 +153,26 @@ func (f *fakeKEEN) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.nonces[req["nonce"]] = req["public_key"]
 		}
 		f.enrolled++
-		f.grant(w, req["public_key"], "")
+		f.grant(w, opened, 201, req["public_key"], "")
 	case "/api/v1/agents/renew":
-		signed, err := ueu.VerifyRequest(r.Header, "POST", ueu.OperationRenew, body, func(k string) (ed25519.PublicKey, error) {
-			if key, ok := f.keys[k]; ok {
-				return key, nil
-			}
-			return nil, errors.New("unknown key")
-		}, time.Now())
-		if err != nil {
-			w.WriteHeader(401)
+		if len(pubRaw) != ed25519.PublicKeySize {
+			w.WriteHeader(400)
 			return
 		}
-		msg, _ := ueu.Canonical(map[string]any{"context": "keen-agent-renew-v1", "agent_id": agentID, "previous_key_id": signed.KeyID, "public_key": req["public_key"]})
+		msg, _ := ueu.Canonical(map[string]any{"context": "keen-agent-renew-v1", "agent_id": agentID, "previous_key_id": agentKey, "public_key": req["public_key"]})
 		if !ed25519.Verify(pubRaw, msg, proof) {
 			w.WriteHeader(400)
 			return
 		}
 		f.renewed++
-		f.grant(w, req["public_key"], "")
+		f.grant(w, opened, 200, req["public_key"], "")
 	default:
 		w.WriteHeader(404)
 	}
 }
 
 func setup(t *testing.T) (*fakeKEEN, *httptest.Server) {
-	f := &fakeKEEN{t: t, keys: map[string]ed25519.PublicKey{}, nonces: map[string]string{}, proofs: map[string]bool{}}
+	f := &fakeKEEN{t: t, keen: keentest.New(), keys: map[string]ed25519.PublicKey{}, nonces: map[string]string{}, proofs: map[string]bool{}}
 	s := httptest.NewTLSServer(f)
 	t.Cleanup(s.Close)
 	return f, s
@@ -146,7 +186,7 @@ func TestCodeEnrolmentAndRenewal(t *testing.T) {
 	if err != nil || id.Enrolled() || store.saves != 1 {
 		t.Fatal(id, err)
 	}
-	code := "kc_" + agentID + "." + strings.Repeat("A", 43)
+	code := f.keen.Credential("kc", agentID)
 	m := NewManager(store, id, s.Client(), "test", func() (string, error) { return code, nil })
 	ready, err := m.Ready(context.Background(), time.Now())
 	if err != nil || !ready || !m.Identity().Enrolled() || f.enrolled != 1 {
@@ -176,11 +216,11 @@ func TestEveryEnrolmentAttemptSignsAFreshProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code := "kc_" + agentID + "." + strings.Repeat("A", 43)
+	code := f.keen.Credential("kc", agentID)
 	// A retry after a lost response repeats the request with a new proof,
 	// which the fake server, like KEEN, requires.
 	for range 2 {
-		if _, err := Enroll(context.Background(), s.Client(), id, code, "test"); err != nil {
+		if _, _, err := Enroll(context.Background(), s.Client(), id, code, "test"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -193,7 +233,7 @@ func TestProfileEnrolmentPersistsNonceBeforeRequest(t *testing.T) {
 	f, s := setup(t)
 	store := &memoryStore{}
 	id, _ := Open(store, s.URL+"/api/v1/otlp/logs", "host-1")
-	key := "ke_" + agentID + "." + strings.Repeat("B", 43)
+	key := f.keen.Credential("ke", agentID)
 	f.status = 503
 	m := NewManager(store, id, s.Client(), "test", func() (string, error) { return key, nil })
 	if ready, _ := m.Ready(context.Background(), time.Now()); ready {
@@ -210,17 +250,38 @@ func TestProfileEnrolmentPersistsNonceBeforeRequest(t *testing.T) {
 	}
 }
 
-func TestPermanentRejectionBlocks(t *testing.T) {
+// A refusal is unsealed and may not come from KEEN, so it never blocks the
+// identity: the agent waits an hour and tries again.
+func TestRefusalsBackOffWithoutBlocking(t *testing.T) {
 	f, s := setup(t)
 	store := &memoryStore{}
 	id, _ := Open(store, s.URL+"/api/v1/otlp/logs", "")
 	f.status = 401
-	m := NewManager(store, id, s.Client(), "test", func() (string, error) { return "kc_" + agentID + "." + strings.Repeat("C", 43), nil })
-	if ready, err := m.Ready(context.Background(), time.Now()); ready || err == nil || store.id.Blocked == "" {
-		t.Fatal("permanent rejection did not block")
+	m := NewManager(store, id, s.Client(), "test", func() (string, error) { return f.keen.Credential("kc", agentID), nil })
+	now := time.Now()
+	ready, err := m.Ready(context.Background(), now)
+	if ready || err == nil || !strings.Contains(err.Error(), "refused") || store.id.Blocked != "" {
+		t.Fatal(ready, err, store.id.Blocked)
 	}
-	if ready, _ := m.Ready(context.Background(), time.Now().Add(24*time.Hour)); ready {
-		t.Fatal("blocked identity became ready")
+	if store.id.NextAttempt.Before(now.Add(RefusalBackoff)) || !strings.Contains(m.LastError(), "HTTP 401") || !strings.Contains(m.LastError(), "save a new one") {
+		t.Fatal(store.id.NextAttempt, m.LastError())
+	}
+	f.status = 0
+	if ready, _ := m.Ready(context.Background(), now.Add(30*time.Minute)); ready || f.enrolled != 0 {
+		t.Fatal("retried before the refusal backoff")
+	}
+	if ready, err := m.Ready(context.Background(), store.id.NextAttempt.Add(time.Second)); !ready || err != nil || m.LastError() != "" {
+		t.Fatal(ready, err)
+	}
+	// A refused renewal gives the advice that applies to an enrolled agent.
+	f.status = 403
+	if ready, err := m.Ready(context.Background(), m.Identity().RenewAt.Add(time.Second)); ready || !strings.Contains(err.Error(), "purge its state directory") || store.id.Blocked != "" {
+		t.Fatal(ready, err)
+	}
+	f.status = 0
+	// Local conditions still block, and can be cleared.
+	if err := m.Block("test"); err == nil || store.id.Blocked == "" {
+		t.Fatal("block not recorded")
 	}
 	if err := m.Unblock(); err != nil || store.id.Blocked != "" {
 		t.Fatal(err)

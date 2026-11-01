@@ -24,12 +24,12 @@ for (const ok of [true, false])
     };
     w.eval(script);
     d.getElementById("url").value = "keen.example";
-    d.getElementById("code").value = "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    d.getElementById("code").value = "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB";
     d.getElementById("setup").dispatchEvent(
       new w.Event("submit", { cancelable: true }),
     );
     assert.equal(d.getElementById("connect").disabled, true);
-    assert.deepEqual(seen, { url: "keen.example", code: "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" });
+    assert.deepEqual(seen, { url: "keen.example", code: "kc_6f8459a2-2768-41a4-94d5-a0cdcc2d7187.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB" });
     resolve(
       ok ? { ok: true } : { ok: false, error: "<img src=x onerror=alert(1)>" },
     );

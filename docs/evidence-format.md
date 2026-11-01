@@ -3,8 +3,9 @@
 KEEN Agent sends evidence as Universal Evidence Utility (UEU) envelopes. This
 document specifies KEEN's profile of the draft UEU specification: the envelope,
 event catalogues, canonical form, hashing, chaining, batch signatures, the
-OTLP binding, and the agent identity protocol (enrolment, renewal and request
-signatures). KEEN's receiver implements the same rules, and
+OTLP binding, and the agent identity protocol (KEEN's identity, end-to-end
+encryption, enrolment, renewal and request signatures). KEEN's receiver
+implements the same rules, and
 `internal/ueu/testdata/vectors.json` pins byte-exact examples that both
 implementations must reproduce.
 
@@ -199,8 +200,8 @@ Producers account for their own collection with two event types:
 
 ## 9. Batches and the OTLP binding
 
-A batch is sent as one OTLP/HTTP JSON logs request (`application/json`) with
-one resource. Each log record carries one envelope:
+A batch is one OTLP/HTTP JSON logs document with one resource, sent encrypted
+to KEEN (section 11). Each log record carries one envelope:
 
 - `body`: `{"stringValue": <the envelope's canonical text>}`;
 - `timeUnixNano`: the event time;
@@ -253,7 +254,7 @@ receipt: above it, an included payload is removed and recorded in the custody
 record, and `log.line.collected` envelopes are not stored (their chain
 positions are still recorded).
 
-## 11. Agent identity
+## 11. Agent identity and transport
 
 ### Keys
 
@@ -265,16 +266,103 @@ KEEN stores only public keys. A key's identifier is
 
 Public keys are sent as unpadded base64url of the raw 32 bytes.
 
-### Enrolment
+### KEEN's identity
 
-`POST /v1/agents/enroll` with `Authorization: Bearer <credential>`, where the
-credential is a single-use enrolment code (`kc_<agent id>.<43 base64url>`,
-valid for 24 hours) issued for a registered identity, or an enrollment
-profile's bootstrap key (`ke_<profile id>.<43 base64url>`). Body:
+TLS protects a request only as far as whatever holds a certificate for KEEN's
+hostname: a reverse proxy, a load balancer, an inspecting middlebox, or an
+impostor that obtained one. Agents therefore encrypt every request to KEEN
+itself, and act only on responses that prove they came from it.
+
+KEEN holds an Ed25519 **identity key**. Its fingerprint is
+
+    fingerprint = unpadded base64url of the first 16 bytes of SHA-256(raw 32-byte public key)
+
+(22 characters) and ends every enrolment code and bootstrap key. The agent
+pins it from its credential and keeps it in its private state; it never
+changes for an enrolled agent. Replacing KEEN's identity key means enrolling
+every agent again.
+
+KEEN also holds an **encryption key** for HPKE (RFC 9180) with the suite
+`MLKEM768-X25519` (the hybrid post-quantum KEM of draft-ietf-hpke-pq),
+`HKDF-SHA256` and `AES-256-GCM`. KEEN makes a new one every 30 days. Agents
+may encrypt to a key until its `not_after` (37 days after it was made), and
+KEEN erases its private half an hour later, so recorded traffic cannot later
+be opened with keys taken from KEEN.
+
+`GET /v1/agents/server-key` (unauthenticated) returns
 
 ```json
-{"public_key": "…", "created": 1793151600, "proof_nonce": "…", "proof": "…",
- "name": "…", "nonce": "…"}
+{"identity": {"algorithm": "ed25519", "fingerprint": "…", "public_key": "…"},
+ "encryption_key": {"aead": "AES-256-GCM",
+                    "context": "keen-agent-encryption-key-v1",
+                    "identity": "<fingerprint>",
+                    "issued_at": "2026-11-01T00:00:00Z",
+                    "kdf": "HKDF-SHA256",
+                    "kem": "MLKEM768-X25519",
+                    "key_id": "<first 16 hex digits of SHA-256(public key)>",
+                    "not_after": "2026-12-08T00:00:00Z",
+                    "public_key": "<1216 bytes: ML-KEM-768 encapsulation key, then X25519 key; base64url>"},
+ "signature": "<Ed25519 by the identity key over the canonical form of encryption_key>"}
+```
+
+The agent accepts it only if the identity's fingerprint is the pinned one,
+the signature verifies, the statement has exactly these fields and this
+suite, `key_id` matches the public key, and `not_after` has not passed.
+
+The agent fetches the document when it enrols, when a KEEN response names
+another key in `Keen-Encryption-Key`, when KEEN answers 421, and from seven
+days before `not_after`. It fetches at most once a minute (once an hour ahead
+of expiry), whatever prompts the fetch, and stops sending when it holds no
+usable key.
+
+### Sealed requests and responses
+
+Every agent request (enrolment, evidence, health and renewal) is sealed:
+
+    Content-Type: application/vnd.keen.sealed
+    Keen-Encryption-Key: <key_id>
+    Keen-Agent-Operation: enroll | otlp-logs | heartbeat | renew
+
+with the body HPKE single-shot `Seal` (base mode) output, `enc ‖ ciphertext`,
+where
+
+    info      = "keen-agent-request-v1" 0x00 <operation> 0x00 <key_id> 0x00 <agent key_id, or empty when enrolling>
+    plaintext = <32 random bytes: the response key> ‖ <the request document>
+
+`info` binds the ciphertext to its operation, KEEN key and sender. KEEN
+accepts no plaintext from keen-agent (415), no compressed sealed bodies (415),
+and answers 421 when it no longer holds the named key; the agent then fetches
+the document and sends the request again, once. Plaintext limits apply after
+opening; the sealed body may be 1,168 bytes longer.
+
+A success response (200 or 201) is sealed with the response key:
+
+    Content-Type: application/vnd.keen.sealed-response
+    Keen-Encryption-Key: <the key KEEN now prefers>
+    body = <12-byte nonce> ‖ AES-256-GCM(response key, nonce, document,
+           aad = "keen-agent-response-v1" 0x00 <operation> 0x00 <status in decimal>)
+
+Only a holder of KEEN's encryption key could read the response key, so a
+response that opens is KEEN's answer to that request. The agent acts on
+nothing else: an acknowledgement that does not open leaves the records
+queued, and a grant that does not open is not applied. Error responses are
+not sealed and change nothing but the agent's retry timing: after a refusal
+(4xx other than 408, 421 and 429) the agent waits an hour and tries again; it
+never blocks its identity or discards records because of one.
+
+### Enrolment
+
+The agent fetches and checks KEEN's document against the fingerprint ending
+its credential, then sends `POST /v1/agents/enroll`, sealed with operation
+`enroll`. The credential travels only inside the sealed body. It is a
+single-use enrolment code (`kc_<agent id>.<43 base64url>.<fingerprint>`, valid
+for 24 hours) issued for a registered identity, or an enrollment profile's
+bootstrap key (`ke_<profile id>.<43 base64url>.<fingerprint>`). Request
+document:
+
+```json
+{"credential": "kc_…", "public_key": "…", "created": 1793151600,
+ "proof_nonce": "…", "proof": "…", "name": "…", "nonce": "…"}
 ```
 
 `name` and `nonce` (32 random bytes, unpadded base64url, saved privately
@@ -295,7 +383,9 @@ which proves possession of the key and binds it to that credential. KEEN
 accepts a proof only within 300 seconds of `created` and accepts each
 `proof_nonce` once per key, so a recorded request cannot be replayed to fetch
 the grant. A retry with the same code (or the same profile, name, nonce), the
-same key and a fresh proof returns the same binding; another key is refused. The response (the **grant**):
+same key and a fresh proof returns the same binding; another key is refused.
+KEEN refuses a credential whose fingerprint is not its current identity's. The
+sealed response (the **grant**):
 
 ```json
 {"agent": {"id", "name", "agent_type", "enrollment_profile_id", "expires_at", "enabled"},
@@ -305,31 +395,32 @@ same key and a fresh proof returns the same binding; another key is refused. The
  "catalogue": {"id": "keen", "version": "2026.10"}}
 ```
 
-The agent checks that `key_id` names the key it holds before saving the grant.
+The agent checks that `key_id` names the key it holds before saving the grant
+and the server key it verified.
 A new enrolment with a fresh code retires the identity's previous key.
 
 ### Request signatures
 
-Every other agent request is signed with RFC 9421 HTTP Message Signatures:
+Every other agent request is also signed with RFC 9421 HTTP Message
+Signatures, over the sealed body:
 
-    Content-Type: application/json
-    Content-Digest: sha-256=:<base64 SHA-256 of the body>:
-    Keen-Agent-Operation: otlp-logs | heartbeat | renew
-    Signature-Input: keen=("@method" "keen-agent-operation" "content-digest" "content-type");created=<unix seconds>;keyid="<key id>";nonce="<16 random bytes, base64url>";alg="ed25519"
+    Content-Digest: sha-256=:<base64 SHA-256 of the sealed body>:
+    Signature-Input: keen=("@method" "keen-agent-operation" "keen-encryption-key" "content-digest" "content-type");created=<unix seconds>;keyid="<key id>";nonce="<16 random bytes, base64url>";alg="ed25519"
     Signature: keen=:<base64 Ed25519 signature>:
 
 over the signature base
 
     "@method": POST
     "keen-agent-operation": <operation>
+    "keen-encryption-key": <key_id>
     "content-digest": <Content-Digest value>
-    "content-type": application/json
+    "content-type": application/vnd.keen.sealed
     "@signature-params": <Signature-Input value after "keen=">
 
 KEEN accepts a signature only within five minutes of `created`, only once per
 nonce, only for the endpoint matching its operation, and only with the
-identity's active key; it compares the body with `Content-Digest` after
-reading it.
+identity's active key; it compares the body with `Content-Digest` before
+opening it.
 
 ### Renewal
 
@@ -348,9 +439,9 @@ with `proof` by the new key over the canonical form of
 {"context": "keen-agent-renew-v1", "agent_id": "…", "previous_key_id": "…", "public_key": "…"}
 ```
 
-KEEN binds the new key, retires the old one and returns a grant. For 24 hours
-the retired key and the same nonce can repeat the request after a lost
-response and receive the same grant.
+KEEN binds the new key, retires the old one and returns a sealed grant. For 24
+hours the retired key and the same nonce can repeat the request after a lost
+(or unverifiable) response and receive the same grant.
 
 ## 12. Receiver results and errors
 
@@ -362,7 +453,12 @@ usual rules but keeps typed booleans, integers and timestamps whatever their
 names; when anything changes, the custody record lists each changed path and
 the reason and keeps the original evidence hash.
 
-Rejections carry these codes:
+Transport refusals are HTTP statuses: 415 for a plaintext or compressed
+request from keen-agent, 400 for a sealed body that does not open (or opens to
+an invalid document), and 421 for a request encrypted to a key KEEN no longer
+holds.
+
+Envelope rejections carry these codes:
 
 | Code | Meaning |
 | --- | --- |
@@ -380,6 +476,12 @@ Rejections carry these codes:
 and the subject key `0x07` × 32: the public key and key ID, a sealed
 observation envelope (canonical text and evidence hash), a signed manifest, a
 subject pseudonym with its inputs, and a signed heartbeat request (body,
-digest, signature input, base and signature). `go test ./internal/ueu`
+digest, signature input, base and signature). For the transport it holds,
+for the identity seed `0x43` × 32 and the HPKE seed `0x44` × 32 (Go's
+MLKEM768-X25519 private key; KEEN expands it with SHAKE256 into the 64-byte
+ML-KEM seed and the X25519 key): the identity fingerprint, a signed
+encryption key statement, a sealed heartbeat request with its `info` and
+plaintext, and a response sealed with the response key `0x45` × 32 and nonce
+`0x46` × 12. `go test ./internal/ueu`
 reproduces them; KEEN's `services/api/tests/test_ueu_evidence.py` checks its
 own implementation against the same file.
