@@ -55,7 +55,10 @@ func parse(c Config, s Source, raw string, ts time.Time) Event {
 				e.Timestamp = t.UTC()
 			}
 		}
-		normalizeSyslogText(&e)
+		// A journal record is classified once its journal fields are added.
+		if s.Kind != "journal" {
+			normalizeSyslogText(&e)
+		}
 	case "auditd":
 		if m := auditID.FindStringSubmatch(raw); m != nil {
 			seconds, _ := strconv.ParseFloat(m[1], 64)
@@ -78,7 +81,7 @@ func parse(c Config, s Source, raw string, ts time.Time) Event {
 		if e.Fields["success"] == "yes" || e.Fields["res"] == "success" {
 			e.Outcome = "success"
 		}
-		if e.Fields["success"] == "no" || e.Fields["res"] == "failed" {
+		if e.Fields["success"] == "no" || e.Fields["res"] == "failed" || e.Fields["type"] == "AVC" && (e.Fields["apparmor"] == "DENIED" || avcDenied.MatchString(raw)) {
 			e.Outcome = "failure"
 			e.Severity = 6
 		}

@@ -186,7 +186,7 @@ func loop(c Config, sp *Spool, h *http.Client, manager *agentauth.Manager) error
 		if id.Blocked != "" {
 			blocked = true
 		}
-		if id.Enrolled() && (sp.sealer == nil || sp.sealer.producer.InstanceID != id.AgentID || sp.sealer.ceiling != id.EvidenceCeiling()) {
+		if id.Enrolled() && (sp.sealer == nil || sp.sealer.producer.InstanceID != id.AgentID || sp.sealer.ceiling != id.EvidenceCeiling() || sp.sealer.granted != id.Catalogue) {
 			if sp.sealer, e = newSealer(c, id); e != nil {
 				return e
 			}

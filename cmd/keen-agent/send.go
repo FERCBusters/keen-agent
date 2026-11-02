@@ -109,12 +109,20 @@ func heartbeat(c Config, m *agentauth.Manager, health map[string]any) error {
 	if err != nil {
 		return err
 	}
-	_, err = m.Post(context.Background(), agentauth.Base(c.Endpoint)+"/v1/agents/heartbeat", ueu.OperationHeartbeat, payload)
+	res, err := m.Post(context.Background(), agentauth.Base(c.Endpoint)+"/v1/agents/heartbeat", ueu.OperationHeartbeat, payload)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "request failed") {
 			return errors.New("health delivery failed")
 		}
 		return asDelivery(err)
+	}
+	// The sealed reply names the catalogue KEEN accepts; a KEEN release that
+	// names none keeps the agent on the catalogue it already follows.
+	var reply struct {
+		Catalogue ueu.CatalogueRef `json:"catalogue"`
+	}
+	if json.Unmarshal(res.Body, &reply) == nil && reply.Catalogue.ID != "" {
+		return m.Grant(reply.Catalogue)
 	}
 	return nil
 }

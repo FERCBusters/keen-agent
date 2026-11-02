@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"keen-agent/internal/ueu"
 )
 
 // Store persists the private identity atomically.
@@ -98,6 +100,16 @@ func (m *Manager) Block(reason string) error {
 		return err
 	}
 	return errors.New(reason)
+}
+
+// Grant records the event catalogue KEEN granted in a sealed reply.
+func (m *Manager) Grant(catalogue ueu.CatalogueRef) error {
+	if catalogue == m.state.Catalogue {
+		return nil
+	}
+	next := m.state
+	next.Catalogue = catalogue
+	return m.save(next)
 }
 
 // Unblock clears a block and the retry backoff, keeping any pending attempt.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +139,25 @@ func TestEventPayloadFollowsModeAndCatalogue(t *testing.T) {
 	}
 	if _, err = p.Emit(Event{Type: "software.package.changed", Outcome: "triumph", Time: fixed}); err == nil {
 		t.Fatal("unknown outcome accepted")
+	}
+}
+
+func TestGrantedCataloguesExtendTheFirst(t *testing.T) {
+	first := KEEN()
+	november := Granted(CatalogueRef{ID: "keen", Version: "2026.11"})
+	if november.Ref.Version != "2026.11" || Granted(CatalogueRef{}).Ref != first.Ref || Granted(CatalogueRef{ID: "keen", Version: "2099.1"}).Ref != first.Ref {
+		t.Fatal(november.Ref)
+	}
+	// A later catalogue keeps every earlier event type unchanged.
+	for name, spec := range first.EventTypes {
+		if !reflect.DeepEqual(november.EventTypes[name], spec) {
+			t.Fatalf("%s changed", name)
+		}
+	}
+	for _, name := range []string{"system.fault.detected", "clock.sync.degraded", "dns.lookup.failed", "application.error.logged", "user.account.changed"} {
+		if !november.Has(name) || first.Has(name) {
+			t.Fatal(name)
+		}
 	}
 }
 

@@ -18,6 +18,9 @@ type sealer struct {
 	producer ueu.Producer
 	ceiling  ueu.Mode
 	fallback ueu.Mode
+	// granted is the catalogue KEEN granted; producer follows it when this
+	// agent holds it.
+	granted ueu.CatalogueRef
 }
 
 func newSealer(c Config, id agentauth.Identity) (*sealer, error) {
@@ -34,9 +37,10 @@ func newSealer(c Config, id agentauth.Identity) (*sealer, error) {
 		return nil, err
 	}
 	return &sealer{
-		producer: ueu.Producer{Catalogue: ueu.KEEN(), ApplicationID: "keen-agent", ApplicationVersion: version, InstanceID: id.AgentID, AssetType: asset, Platform: runtime.GOOS, Subject: subject},
+		producer: ueu.Producer{Catalogue: ueu.Granted(id.Catalogue), ApplicationID: "keen-agent", ApplicationVersion: version, InstanceID: id.AgentID, AssetType: asset, Platform: runtime.GOOS, Subject: subject},
 		ceiling:  id.EvidenceCeiling(),
 		fallback: fallback,
+		granted:  id.Catalogue,
 	}, nil
 }
 
@@ -62,7 +66,9 @@ func (z *sealer) envelopes(s Source, e Event) ([]map[string]any, error) {
 		return z.coverage(e)
 	}
 	mode, _ := z.mode(s)
-	if r := recognise(s, e); r != nil {
+	// An event type KEEN has not granted is left to the modes below, so an
+	// older KEEN never receives one it would refuse.
+	if r := recognise(s, e); r != nil && z.producer.Catalogue.Has(r.eventType) {
 		env, err := z.producer.Emit(ueu.Event{
 			Type: r.eventType, Component: r.component, Action: r.action, Outcome: outcome(e.Outcome), Time: e.Timestamp,
 			Attributes: r.attributes, SubjectKind: r.subjectKind, SubjectValue: r.subject,
@@ -151,6 +157,7 @@ var (
 	sudoCommand = regexp.MustCompile(`(?:^|\s)(\S{1,64}) : (?:[^;\n]*; )*COMMAND=(\S{1,1000})`)
 	aptPackage  = regexp.MustCompile(`([^\s,()]{1,128}) \([^)]*\)`)
 	aptUser     = regexp.MustCompile(`^(\S{1,64})`)
+	avcDenied   = regexp.MustCompile(`avc:\s+denied`)
 )
 
 func recognise(s Source, e Event) *recognised {
@@ -191,6 +198,10 @@ func recognise(s Source, e Event) *recognised {
 		if m := sshdLogin.FindStringSubmatch(e.Raw); m != nil && (e.Action == "authentication.accepted" || e.Action == "authentication.failed") {
 			return &recognised{"user.authenticated", "sshd", "authenticate", map[string]string{"service": "sshd", "method": m[2]}, "unix_user", m[3]}
 		}
+		// Refused and failed sudo attempts are recognised here, never as commands.
+		if r := hostEvent(e); r != nil {
+			return r
+		}
 		if strings.ToLower(f["process.name"]) == "sudo" {
 			if m := sudoCommand.FindStringSubmatch(e.Raw); m != nil {
 				return &recognised{"privileged.action.completed", "sudo", "execute", map[string]string{"mechanism": "sudo", "executable": path.Base(m[2])}, "unix_user", m[1]}
@@ -222,10 +233,21 @@ func recognise(s Source, e Event) *recognised {
 			}
 			r.eventType, r.action = "access.denied", "deny"
 			r.attributes["syscall"], r.attributes["executable"] = f["syscall"], executable
+		case "AVC":
+			// SELinux and AppArmor refusals; granted (audited) access is not evidence.
+			if e.Outcome != "failure" {
+				return nil
+			}
+			r.eventType, r.action = "access.denied", "deny"
+			r.attributes["executable"] = f["comm"]
 		default:
 			return nil
 		}
 		return r
+	case "php":
+		if m := phpError.FindStringSubmatch(e.Raw); m != nil {
+			return &recognised{"application.error.logged", "php", "log", map[string]string{"application": "php", "level": phpLevels[m[1]], "category": "php"}, "", ""}
+		}
 	case "ossec":
 		if f["ossec.rule.id"] == "" {
 			return nil

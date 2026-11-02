@@ -56,6 +56,8 @@ type Identity struct {
 	Blocked         string    `json:"blocked,omitempty"`
 	Failures        int       `json:"failures,omitempty"`
 	NextAttempt     time.Time `json:"next_attempt,omitempty"`
+	// Catalogue is the event catalogue KEEN last granted.
+	Catalogue ueu.CatalogueRef `json:"catalogue,omitzero"`
 	// Server is KEEN's pinned identity and its current encryption key.
 	Server ServerKey `json:"server"`
 }
@@ -451,7 +453,7 @@ func (i *Identity) Accept(g Grant, privateKey string, now time.Time) error {
 	i.AgentID, i.Name, i.ProfileID, i.AssetType = g.Agent.ID, g.Agent.Name, g.Agent.ProfileID, g.Agent.AgentType
 	i.PrivateKey, i.KeyID, i.ExpiresAt = privateKey, g.KeyID, expiry
 	i.RenewAt = expiry.Add(-min(7*24*time.Hour, expiry.Sub(now)/5))
-	i.SubjectType, i.Ceiling = g.Subject.Type, g.Ceiling
+	i.SubjectType, i.Ceiling, i.Catalogue = g.Subject.Type, g.Ceiling, g.Catalogue
 	i.EnrollmentNonce, i.RenewalNonce, i.RenewalKey = "", "", ""
 	i.Blocked, i.Failures, i.NextAttempt = "", 0, time.Time{}
 	return nil

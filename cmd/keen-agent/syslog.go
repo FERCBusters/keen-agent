@@ -77,4 +77,7 @@ func classifySyslog(e *Event, message string) {
 			e.Severity = 6
 		}
 	}
+	if e.Action == "syslog.record" {
+		classifyHost(e, program, message)
+	}
 }

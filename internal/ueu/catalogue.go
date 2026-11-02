@@ -14,8 +14,14 @@ import (
 	"unicode/utf8"
 )
 
+// KEEN's catalogues, oldest first. Every KEEN release accepts the first; KEEN
+// grants a later one to agents once it accepts its event types.
+//
 //go:embed catalogue/keen-2026.10.json
-var keenCatalogue []byte
+var keenCatalogue2610 []byte
+
+//go:embed catalogue/keen-2026.11.json
+var keenCatalogue2611 []byte
 
 // Field limits shared with KEEN's validator.
 const (
@@ -55,9 +61,20 @@ type Catalogue struct {
 	EventTypes map[string]EventType `json:"event_types"`
 }
 
-// KEEN returns the embedded KEEN catalogue.
-func KEEN() *Catalogue {
-	c, err := ParseCatalogue(keenCatalogue)
+// KEEN returns the KEEN catalogue every KEEN release accepts.
+func KEEN() *Catalogue { return embedded(keenCatalogue2610) }
+
+// Granted returns the embedded KEEN catalogue that KEEN granted, or KEEN() when
+// it granted none this agent holds, such as a release older than the agent.
+func Granted(ref CatalogueRef) *Catalogue {
+	if next := embedded(keenCatalogue2611); ref == next.Ref {
+		return next
+	}
+	return KEEN()
+}
+
+func embedded(data []byte) *Catalogue {
+	c, err := ParseCatalogue(data)
 	if err != nil {
 		panic("embedded catalogue: " + err.Error())
 	}
@@ -134,6 +151,12 @@ func (c *Catalogue) Type(name string) (EventType, error) {
 		return t, fmt.Errorf("UEU_EVENT_TYPE_UNKNOWN: %s", name)
 	}
 	return t, nil
+}
+
+// Has reports whether the catalogue defines an event type.
+func (c *Catalogue) Has(name string) bool {
+	_, ok := c.EventTypes[name]
+	return ok
 }
 
 // Rejection records a field that could not be sent as its catalogue type.

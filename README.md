@@ -10,10 +10,14 @@ the KEEN that issued its enrolment code, not just to whatever terminates TLS. KE
 position, stores the evidence with its provenance and applies the
 organisation's framework mapping rules.
 
-- **Servers** (Linux): package changes, SSH and console authentications,
-  sudo and audited privileged commands, denied system calls and OSSEC alerts,
-  recognised in selected logs. Each source chooses whether to send recognised
-  events only, events with their redacted source lines, or every line.
+- **Servers** (Linux): package changes, SSH, console, su, sudo and Drupal
+  sign-ins, privileged commands, refused access (audit, SELinux, AppArmor,
+  sudo), account and group changes, kernel and service faults (out-of-memory
+  kills, I/O and filesystem errors, crashes, failed units), clock
+  synchronisation and name-resolution problems, PHP and Drupal errors, and
+  fail2ban and OSSEC alerts, recognised in selected logs. Each source chooses
+  whether to send recognised events only, events with their redacted source
+  lines, or every line.
 - **Workstations** (Windows, macOS, Linux): disk encryption, screen locking,
   antivirus, firewall and automatic updates, measured hourly, with a record of
   what each run could and could not measure.
@@ -151,10 +155,29 @@ non-regular files are refused.
 | Parser | Recognised events |
 | --- | --- |
 | `dpkg`, `apt`, `dnf` | `software.package.changed` |
-| `syslog` | `user.authenticated` (SSH), `privileged.action.completed` (sudo) |
-| `auditd` | `user.authenticated`, `privileged.action.completed`, `access.denied` |
+| `syslog` (journal or file) | `user.authenticated` (SSH, su, sudo, console and Drupal sign-ins), `privileged.action.completed` (sudo, su), `access.denied` (sudo refusals, AppArmor, SELinux), `security.alert.generated` (fail2ban bans), and with KEEN's 2026.11 catalogue: `system.fault.detected`, `clock.sync.degraded`, `dns.lookup.failed`, `application.error.logged`, `user.account.changed` |
+| `auditd` | `user.authenticated`, `privileged.action.completed`, `access.denied` (including SELinux and AppArmor) |
+| `php` | `application.error.logged` (fatal, parse and recoverable errors; 2026.11 catalogue) |
 | `ossec` | `security.alert.generated` ([docs/ossec.md](docs/ossec.md)) |
-| `raw`, `json`, `nginx`, `php` | lines only (`all_lines` mode) |
+| `raw`, `json`, `nginx` | lines only (`all_lines` mode) |
+
+The `syslog` parser recognises these messages:
+
+| Event type | Messages |
+| --- | --- |
+| `system.fault.detected` | kernel out-of-memory kills, I/O and filesystem (ext4, XFS, Btrfs) errors, segfaults, hung tasks, kernel oopses and panics, hardware (MCE, EDAC) errors; failed systemd units; core dumps; PHP-FPM reaching `pm.max_children`; `No space left on device` from any program |
+| `clock.sync.degraded` | chrony, ntpd and systemd-timesyncd losing their sources, stepping the clock, reporting an offset, a spike (jitter), a frequency error or an unsynchronised clock; offsets are sent in milliseconds |
+| `dns.lookup.failed` | `Temporary failure in name resolution`, `Could not resolve host`, failed `getaddrinfo`, and systemd-resolved falling back to a degraded feature set or failing DNSSEC validation; the name looked up is not sent |
+| `application.error.logged` | PHP fatal, parse and recoverable errors from any program, and Drupal watchdog entries (syslog module) of priority error or worse, or PHP-type errors |
+| `user.account.changed` | `useradd`, `userdel`, `usermod`, `groupadd`, `groupdel`, `gpasswd`, `passwd` and `chpasswd`, and Drupal accounts created, deleted or blocked |
+
+KEEN grants the 2026.11 catalogue in its enrolment, renewal and health
+replies once it accepts these event types. Until then the agent keeps to the
+2026.10 catalogue every KEEN accepts: the newer messages are sent only as
+lines in `all_lines` mode, with their recognised fields (such as `fault` or
+`clock.condition`) as line attributes, and are otherwise counted as not
+evidence. Those fields can also be used in `include_when` and `exclude_when`
+filters, for example to leave out `dns.reason: degraded`.
 
 | `evidence_mode` | Sends |
 | --- | --- |

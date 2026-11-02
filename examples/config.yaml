@@ -26,12 +26,19 @@ evidence_mode: events
 redact:
   - '(?i)Bearer\s+[A-Za-z0-9._~+/=-]+'
 sources:
+  # The whole journal: sign-ins, sudo and su, account changes, refused access,
+  # kernel and service faults, clock and DNS problems, PHP and Drupal errors and
+  # fail2ban bans are recognised; other lines are hashed, or sent in all_lines.
   - name: system
     kind: journal
     parser: syslog
     # evidence_mode: events_with_lines
     # units: [sshd.service, nginx.service]
     # include: '(?i)failed|error|accepted|started|stopped'
+    # exclude_when:
+    #   - field: dns.reason
+    #     operator: equals
+    #     value: degraded
 
   # Enable the sources that exist on this host. Avoid collecting the same
   # messages through both journald and files unless that duplication is intended.
@@ -53,11 +60,17 @@ sources:
   #   parser: nginx
   #   paths: [/var/log/nginx/access.log, /var/log/nginx/access.log.1]
   #   exclude: 'GET /health '
+  # PHP fatal, parse and recoverable errors become events; other lines need all_lines.
   # - name: php-errors
   #   kind: file
   #   parser: php
   #   paths: [/var/log/php/error.log, /var/log/php/error.log.1]
   #   multiline_start: '^\['
+  # Bans from fail2ban's own log, where it does not log to the journal.
+  # - name: fail2ban
+  #   kind: file
+  #   parser: syslog
+  #   paths: [/var/log/fail2ban.log, /var/log/fail2ban.log.1]
   # - name: linux-audit
   #   kind: file
   #   parser: auditd

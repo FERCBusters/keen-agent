@@ -195,8 +195,21 @@ func TestCodeEnrolmentAndRenewal(t *testing.T) {
 	if m.Identity().EvidenceCeiling() != ueu.ModeEventsAndLines || m.Identity().SubjectType != "pairwise" {
 		t.Fatal(m.Identity())
 	}
+	if m.Identity().Catalogue != (ueu.CatalogueRef{ID: "keen", Version: "2026.10"}) {
+		t.Fatal(m.Identity().Catalogue)
+	}
 	if err = m.Identity().Validate(); err != nil {
 		t.Fatal(err)
+	}
+	// A later grant, as a sealed heartbeat reply carries, is kept once.
+	saves, november := store.saves, ueu.CatalogueRef{ID: "keen", Version: "2026.11"}
+	for range 2 {
+		if err = m.Grant(november); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if store.saves != saves+1 || store.id.Catalogue != november {
+		t.Fatal(store.saves, store.id.Catalogue)
 	}
 	firstKey := m.Identity().KeyID
 	// Renewal is due: the current key signs, the new key proves possession.
