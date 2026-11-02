@@ -154,10 +154,14 @@ func TestGrantedCataloguesExtendTheFirst(t *testing.T) {
 			t.Fatalf("%s changed", name)
 		}
 	}
-	for _, name := range []string{"system.fault.detected", "clock.sync.degraded", "dns.lookup.failed", "application.error.logged", "user.account.changed"} {
+	added := []string{"system.fault.detected", "clock.sync.changed", "dns.lookup.failed", "application.error.logged", "user.account.changed", "routine.task.completed", "system.protection.activated"}
+	for _, name := range added {
 		if !november.Has(name) || first.Has(name) {
 			t.Fatal(name)
 		}
+	}
+	if len(november.EventTypes) != len(first.EventTypes)+len(added) {
+		t.Fatal(len(november.EventTypes))
 	}
 }
 

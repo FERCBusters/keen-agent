@@ -36,8 +36,15 @@ func TestHostMessagesBecomeCatalogueEvents(t *testing.T) {
 		{"unit", "syslog", "Jan  1 00:00:00 web systemd[1]: nginx.service: Failed with result 'exit-code'.", "system.fault.detected", "failure", map[string]any{"component": "systemd", "fault": "service_failed", "unit": "nginx.service", "result": "exit-code"}, false},
 		{"disk-full", "syslog", "Jan  1 00:00:00 web postgres[77]: could not write to file \"base/pgsql_tmp\": No space left on device", "system.fault.detected", "failure", map[string]any{"component": "postgres", "fault": "disk_full"}, false},
 		{"workers", "syslog", "Jan  1 00:00:00 web php-fpm8.2[900]: [WARNING] [pool www] server reached pm.max_children setting (5), consider raising it", "system.fault.detected", "failure", map[string]any{"fault": "worker_limit"}, false},
-		{"chrony", "syslog", "Jan  1 00:00:00 web chronyd[500]: System clock wrong by -1.234567 seconds", "clock.sync.degraded", "failure", map[string]any{"daemon": "chronyd", "condition": "offset", "offset_ms": int64(-1235)}, false},
-		{"jitter", "syslog", "Jan  1 00:00:00 web ntpd[600]: 0.0.0.0 0617 07 spike_detect +0.523217 s", "clock.sync.degraded", "failure", map[string]any{"daemon": "ntpd", "condition": "jitter", "offset_ms": int64(523)}, false},
+		{"chrony", "syslog", "Jan  1 00:00:00 web chronyd[500]: System clock wrong by -1.234567 seconds", "clock.sync.changed", "failure", map[string]any{"daemon": "chronyd", "condition": "offset", "offset_ms": int64(-1235)}, false},
+		{"chrony-stepped", "syslog", "Jan  1 00:00:00 web chronyd[500]: System clock was stepped by 1.208229 seconds", "clock.sync.changed", "failure", map[string]any{"condition": "stepped", "offset_ms": int64(1208)}, false},
+		{"chrony-selected", "syslog", "Jan  1 00:00:00 web chronyd[500]: Selected source 192.0.2.1 (ntp.example)", "clock.sync.changed", "success", map[string]any{"daemon": "chronyd", "condition": "source_selected"}, false},
+		{"chrony-selected-v6", "syslog", "Jan  1 00:00:00 web chronyd[500]: Selected source 2001:db8::123 (ntp.example)", "clock.sync.changed", "success", map[string]any{"condition": "source_selected"}, false},
+		{"timesyncd-contacted", "syslog", "Jan  1 00:00:00 web systemd-timesyncd[400]: Contacted time server 192.0.2.1:123 (ntp.example).", "clock.sync.changed", "success", map[string]any{"daemon": "systemd-timesyncd", "condition": "server_contacted"}, false},
+		{"timesyncd-initial", "syslog", "Jan  1 00:00:00 web systemd-timesyncd[400]: Initial clock synchronization to Thu 2026-01-01 00:00:00.123456 UTC.", "clock.sync.changed", "success", map[string]any{"condition": "synchronised"}, false},
+		{"ntpsec-unsynchronised", "syslog", "Jan  1 00:00:00 web ntpd[600]: CLOCK: kernel reports TIME_ERROR: 0x41: Clock Unsynchronized", "clock.sync.changed", "failure", map[string]any{"daemon": "ntpd", "condition": "unsynchronised"}, false},
+		{"ntpdate-stepped", "syslog", "Jan  1 00:00:00 web ntpdate[700]: CLOCK: time stepped by 0.318974", "clock.sync.changed", "failure", map[string]any{"daemon": "ntpdate", "condition": "stepped", "offset_ms": int64(319)}, false},
+		{"jitter", "syslog", "Jan  1 00:00:00 web ntpd[600]: 0.0.0.0 0617 07 spike_detect +0.523217 s", "clock.sync.changed", "failure", map[string]any{"daemon": "ntpd", "condition": "jitter", "offset_ms": int64(523)}, false},
 		{"resolved", "syslog", "Jan  1 00:00:00 web systemd-resolved[300]: Using degraded feature set UDP instead of UDP+EDNS0 for DNS server 192.0.2.53.", "dns.lookup.failed", "failure", map[string]any{"process": "systemd-resolved", "reason": "degraded"}, false},
 		{"curl", "syslog", "Jan  1 00:00:00 web backup.sh[800]: curl: (6) Could not resolve host: backups.internal", "dns.lookup.failed", "failure", map[string]any{"process": "backup.sh", "reason": "unresolved"}, false},
 		{"php-fpm", "syslog", `Jan  1 00:00:00 web php-fpm8.2[900]: [WARNING] [pool www] child 901 said into stderr: "PHP Fatal error:  Uncaught Error: Call to undefined function x() in /var/www/secret.php:3"`, "application.error.logged", "failure", map[string]any{"application": "php", "level": "fatal", "category": "php"}, false},
@@ -77,17 +84,30 @@ func TestHostMessagesBecomeCatalogueEvents(t *testing.T) {
 			}
 			// Names, addresses, hosts and paths stay on the host.
 			text := canonical(t, envs[0])
-			for _, secret := range []string{"alice", "192.0.2", "backups.internal", "secret.php", "/etc/shadow"} {
+			for _, secret := range []string{"alice", "192.0.2", "2001:db8", "ntp.example", "backups.internal", "secret.php", "/etc/shadow"} {
 				if strings.Contains(text, secret) {
 					t.Fatalf("%q disclosed: %s", secret, text)
 				}
 			}
 		})
 	}
-	// Ordinary messages, and Drupal entries that are neither errors nor sign-ins, are not evidence.
+	// Ordinary messages, the copies shadow tools log for the shadow files, the
+	// group useradd creates under a person's login name, other units finishing,
+	// unit results in a syslog file, where the sender writes its own process ID,
+	// and Drupal entries that are neither errors nor sign-ins are not evidence.
 	for _, line := range []string{
 		"Jan  1 00:00:00 web systemd[1]: Started nginx.service - A high performance web server.",
-		"Jan  1 00:00:00 web chronyd[500]: Selected source 192.0.2.1 (ntp.example)",
+		"Jan  1 00:00:00 web systemd[1]: Finished apt-daily.service - Daily apt download activities.",
+		"Jan  1 00:00:00 web systemd[1]: apt-daily-upgrade.service: Deactivated successfully.",
+		"Jan  1 00:00:00 web systemd[1]: Finished apt-daily-upgrade.service - Daily apt upgrade and clean activities.",
+		"Jan  1 00:00:00 web systemd[1]: Finished apparmor.service - Load AppArmor profiles.",
+		"Jan  1 00:00:00 web useradd[1000]: new group: name=alice, GID=1001",
+		"Jan  1 00:00:00 web chronyd[500]: Source 192.0.2.1 replaced with 192.0.2.2 (ntp.example)",
+		"Jan  1 00:00:00 web systemd-timesyncd[400]: Network configuration changed, trying to establish connection.",
+		"Jan  1 00:00:00 web ntpdate[700]: 2026-01-01 00:00:00.123456 (+0000) +0.318974 +/- 0.004764 ntp.example 192.0.2.1 s1 no-leap",
+		"Jan  1 00:00:00 web usermod[1001]: add 'alice' to shadow group 'sudo'",
+		"Jan  1 00:00:00 web groupadd[1002]: group added to /etc/group: name=deploy, GID=1002",
+		"Jan  1 00:00:00 web kernel: [0.1] EDAC MC: Ver: 3.0.0",
 		"Jan  1 00:00:00 web fake[5]: [sshd] Ban 192.0.2.7",
 		drupal + "content|192.0.2.9|https://example.org/node/add||1||article: added Hello.",
 		drupal + "php|192.0.2.9|https://example.org/node/1||5||Warning: Undefined variable $x in y()",
@@ -109,6 +129,47 @@ func TestJournalErrorsUseTheirPriority(t *testing.T) {
 	}
 	if got := envs[0]["attributes"].(map[string]any); got["application"] != "drupal" || got["level"] != "error" || got["category"] != "cron" {
 		t.Fatal(got)
+	}
+}
+
+func TestUnitResultsComeFromSystemdItself(t *testing.T) {
+	z := grantedSealer(t, "events", november)
+	source := Source{Name: "journal", Kind: "journal", Parser: "syslog"}
+	finished := func(message, pid, uid string) []map[string]any {
+		e := parse(Config{}, source, message, time.Now())
+		e.Fields["SYSLOG_IDENTIFIER"], e.Fields["_PID"], e.Fields["_UID"], e.Fields["_COMM"] = "systemd", pid, uid, "systemd"
+		normalizeJournal(&e)
+		envs, err := z.envelopes(source, e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return envs
+	}
+	for _, tc := range []struct {
+		message, eventType string
+		attributes         map[string]any
+	}{
+		{"Finished apt-daily-upgrade.service - Daily apt upgrade and clean activities.", "routine.task.completed", map[string]any{"task": "patching", "tool": "apt", "unit": "apt-daily-upgrade.service"}},
+		{"Finished apparmor.service - Load AppArmor profiles.", "system.protection.activated", map[string]any{"protection": "mandatory_access_control", "mechanism": "apparmor", "unit": "apparmor.service"}},
+	} {
+		envs := finished(tc.message, "1", "0")
+		if len(envs) != 1 || envs[0]["event_type"] != tc.eventType || envs[0]["event"].(map[string]any)["outcome"] != "success" {
+			t.Fatal(envs)
+		}
+		got := envs[0]["attributes"].(map[string]any)
+		for k, v := range tc.attributes {
+			if got[k] != v {
+				t.Fatalf("%s=%v, want %v", k, got[k], v)
+			}
+		}
+		if _, ok := envs[0]["subject"]; ok {
+			t.Fatal("subject sent")
+		}
+		// journald records the sender's process ID itself, so an account writing
+		// the same text as "systemd" (logger -t systemd) does not produce the event.
+		if envs := finished(tc.message, "4242", "1000"); len(envs) != 0 {
+			t.Fatal(envs)
+		}
 	}
 }
 

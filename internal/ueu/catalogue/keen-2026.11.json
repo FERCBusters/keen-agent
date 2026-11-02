@@ -2,7 +2,7 @@
   "catalogue": {
     "id": "keen",
     "version": "2026.11",
-    "description": "KEEN's event catalogue for host and workstation evidence. Implementors may define their own catalogues; envelopes name the catalogue they follow. This version adds host faults, clock and name-resolution problems, application errors and account changes."
+    "description": "KEEN's event catalogue for host and workstation evidence. Implementors may define their own catalogues; envelopes name the catalogue they follow. This version adds host faults, clock synchronisation, name-resolution problems, application errors, account changes, routine tasks and protections taking effect."
   },
   "classifications": {
     "evidence_metadata": "Measured settings, states, counts and times. Not personal data or a secret.",
@@ -320,7 +320,7 @@
       },
       "prohibited": ["source_address", "username"]
     },
-    "clock.sync.degraded": {
+    "clock.sync.changed": {
       "class": "event",
       "object_type": "clock",
       "summary": "Clock synchronisation by {attributes.daemon}: {attributes.condition}",
@@ -374,6 +374,34 @@
         "group": {"type": "string", "classification": "operational"}
       },
       "prohibited": ["password", "username"]
+    },
+    "routine.task.completed": {
+      "class": "event",
+      "object_type": "task",
+      "summary": "Routine task {attributes.task} by {attributes.tool}: {outcome}",
+      "subject": "forbidden",
+      "payload": "optional",
+      "additional_attributes": "reject",
+      "attributes": {
+        "task": {"type": "string"},
+        "tool": {"type": "string", "classification": "operational"},
+        "unit": {"type": "string", "classification": "operational"}
+      },
+      "prohibited": ["source_address", "username"]
+    },
+    "system.protection.activated": {
+      "class": "event",
+      "object_type": "protection",
+      "summary": "Protection {attributes.protection} active: {attributes.mechanism}",
+      "subject": "forbidden",
+      "payload": "optional",
+      "additional_attributes": "reject",
+      "attributes": {
+        "protection": {"type": "string"},
+        "mechanism": {"type": "string", "classification": "operational"},
+        "unit": {"type": "string", "classification": "operational"}
+      },
+      "prohibited": ["source_address"]
     }
   }
 }

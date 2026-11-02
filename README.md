@@ -14,8 +14,9 @@ organisation's framework mapping rules.
   sign-ins, privileged commands, refused access (audit, SELinux, AppArmor,
   sudo), account and group changes, kernel and service faults (out-of-memory
   kills, I/O and filesystem errors, crashes, failed units), clock
-  synchronisation and name-resolution problems, PHP and Drupal errors, and
-  fail2ban and OSSEC alerts, recognised in selected logs. Each source chooses
+  synchronisation, name-resolution problems, PHP and Drupal errors, the daily
+  apt upgrade job completing, AppArmor profiles loaded at boot, and fail2ban
+  and OSSEC alerts, recognised in selected logs. Each source chooses
   whether to send recognised events only, events with their redacted source
   lines, or every line.
 - **Workstations** (Windows, macOS, Linux): disk encryption, screen locking,
@@ -155,7 +156,7 @@ non-regular files are refused.
 | Parser | Recognised events |
 | --- | --- |
 | `dpkg`, `apt`, `dnf` | `software.package.changed` |
-| `syslog` (journal or file) | `user.authenticated` (SSH, su, sudo, console and Drupal sign-ins), `privileged.action.completed` (sudo, su), `access.denied` (sudo refusals, AppArmor, SELinux), `security.alert.generated` (fail2ban bans), and with KEEN's 2026.11 catalogue: `system.fault.detected`, `clock.sync.degraded`, `dns.lookup.failed`, `application.error.logged`, `user.account.changed` |
+| `syslog` (journal or file) | `user.authenticated` (SSH, su, sudo, console and Drupal sign-ins), `privileged.action.completed` (sudo, su), `access.denied` (sudo refusals, AppArmor, SELinux), `security.alert.generated` (fail2ban bans), and with KEEN's 2026.11 catalogue: `system.fault.detected`, `clock.sync.changed`, `dns.lookup.failed`, `application.error.logged`, `user.account.changed`, `routine.task.completed`, `system.protection.activated` |
 | `auditd` | `user.authenticated`, `privileged.action.completed`, `access.denied` (including SELinux and AppArmor) |
 | `php` | `application.error.logged` (fatal, parse and recoverable errors; 2026.11 catalogue) |
 | `ossec` | `security.alert.generated` ([docs/ossec.md](docs/ossec.md)) |
@@ -166,10 +167,22 @@ The `syslog` parser recognises these messages:
 | Event type | Messages |
 | --- | --- |
 | `system.fault.detected` | kernel out-of-memory kills, I/O and filesystem (ext4, XFS, Btrfs) errors, segfaults, hung tasks, kernel oopses and panics, hardware (MCE, EDAC) errors; failed systemd units; core dumps; PHP-FPM reaching `pm.max_children`; `No space left on device` from any program |
-| `clock.sync.degraded` | chrony, ntpd and systemd-timesyncd losing their sources, stepping the clock, reporting an offset, a spike (jitter), a frequency error or an unsynchronised clock; offsets are sent in milliseconds |
+| `clock.sync.changed` | chrony selecting a source and systemd-timesyncd contacting a time server or first synchronising the clock (outcome `success`); chrony, ntpd, ntpsec's ntpdate and systemd-timesyncd losing their sources, stepping the clock, reporting an offset, a spike (jitter), a frequency error or an unsynchronised clock (outcome `failure`); offsets are sent in milliseconds and the time servers are not sent |
 | `dns.lookup.failed` | `Temporary failure in name resolution`, `Could not resolve host`, failed `getaddrinfo`, and systemd-resolved falling back to a degraded feature set or failing DNSSEC validation; the name looked up is not sent |
 | `application.error.logged` | PHP fatal, parse and recoverable errors from any program, and Drupal watchdog entries (syslog module) of priority error or worse, or PHP-type errors |
 | `user.account.changed` | `useradd`, `userdel`, `usermod`, `groupadd`, `groupdel`, `gpasswd`, `passwd` and `chpasswd`, and Drupal accounts created, deleted or blocked |
+| `routine.task.completed` | systemd finishing `apt-daily-upgrade.service`, the daily apt job that runs unattended-upgrades where it is installed and enabled (`task` `patching`). The event shows the job ran to completion: unattended-upgrades records the updates it installs, and its own errors, in its log. A job that fails is a `system.fault.detected` failed unit |
+| `system.protection.activated` | systemd finishing `apparmor.service`, which loads the AppArmor profiles at boot (`protection` `mandatory_access_control`) |
+
+Completed units are recognised only in the journal, from systemd itself: the
+record must come from process 1, which journald records for each sender, so a
+program logging as `systemd` cannot report another unit's run. A syslog file
+carries the process ID its sender wrote, so its unit results are not evidence.
+The messages are matched in the `Finished <unit> - <description>.` form that
+systemd 257 logs on Debian 13; a host set to `StatusUnitFormat=description`
+logs the description alone and is not recognised. Other recognised messages
+are as trustworthy as the log they come from, since a local program can write
+a message under any name.
 
 KEEN grants the 2026.11 catalogue in its enrolment, renewal and health
 replies once it accepts these event types. Until then the agent keeps to the

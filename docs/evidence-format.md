@@ -84,8 +84,9 @@ the vocabulary to implementors; envelopes name the catalogue they follow.
 KEEN's catalogues are `internal/ueu/catalogue/keen-2026.10.json`
 (`{"id": "keen", "version": "2026.10"}`) and `keen-2026.11.json`, which keeps
 every 2026.10 event type unchanged and adds `system.fault.detected`,
-`clock.sync.degraded`, `dns.lookup.failed`, `application.error.logged` and
-`user.account.changed`. Both ship identically in KEEN. KEEN names the
+`clock.sync.changed`, `dns.lookup.failed`, `application.error.logged`,
+`user.account.changed`, `routine.task.completed` and
+`system.protection.activated`. Both ship identically in KEEN. KEEN names the
 catalogue an agent may follow in its enrolment and renewal grants and in its
 sealed health replies; an agent follows that catalogue when it holds it, and
 the 2026.10 catalogue otherwise, so it never sends an event type KEEN would

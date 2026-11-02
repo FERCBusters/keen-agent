@@ -9,10 +9,11 @@ import (
 )
 
 // Journal and syslog messages recognised beyond SSH logins and sudo: host
-// faults, clock and name-resolution problems, PHP and Drupal errors, account
-// changes, refused access, other failed sign-ins and fail2ban bans. Each rule
-// sets the record's action and fields, so filters can select them and
-// recognise turns them into catalogue events. Names of people stay in
+// faults, clock synchronisation, name-resolution problems, PHP and Drupal
+// errors, account changes, refused access, other failed sign-ins, fail2ban
+// bans, the daily apt upgrade job completing and AppArmor loading its profiles
+// at boot. Each rule sets the record's action and fields, so filters can select
+// them and recognise turns them into catalogue events. Names of people stay in
 // user.name, which is pseudonymised as the subject and never sent as text.
 
 // hostRule recognises one kind of message from the named programs, or from
@@ -59,6 +60,31 @@ func clock(condition string) func(*Event, []string) {
 	}
 }
 
+func synchronised(condition string) func(*Event, []string) {
+	return set("clock.sync", "success", map[string]string{"clock.condition": condition})
+}
+
+// fromInit applies only to a journal record from systemd itself. journald
+// records each sender's process ID, so a program writing as "systemd" cannot
+// claim another unit's run; a syslog file carries only the ID the sender wrote.
+func fromInit(apply func(*Event, []string)) func(*Event, []string) {
+	return func(e *Event, m []string) {
+		if e.Fields["_PID"] == "1" {
+			apply(e, m)
+		}
+	}
+}
+
+// task records a routine task's unit finishing its run.
+func task(kind, tool string) func(*Event, []string) {
+	return fromInit(set("task.completed", "success", map[string]string{"task": kind, "task.tool": tool}, "task.unit"))
+}
+
+// protection records a protection taking effect, named by its unit.
+func protection(kind, mechanism string) func(*Event, []string) {
+	return fromInit(set("protection.activated", "success", map[string]string{"protection": kind, "protection.mechanism": mechanism}, "protection.unit"))
+}
+
 func dns(reason string) func(*Event, []string) {
 	return set("dns.failure", "failure", map[string]string{"dns.reason": reason})
 }
@@ -103,7 +129,15 @@ var hostRules = []hostRule{
 	{"systemd-coredump", regexp.MustCompile(`^Process \d+ \(([^)]{1,64})\) of user \d+ dumped core`), fault("core_dump", "fault.process")},
 	{"", regexp.MustCompile(`server reached (?:pm\.)?max_children setting`), fault("worker_limit")},
 	{"", regexp.MustCompile(`No space left on device`), fault("disk_full")},
+	// Routine tasks and protections: systemd reports a unit's start job
+	// finishing as "Finished <unit> - <description>." once the run succeeds
+	// (systemd 257 on Debian 13; StatusUnitFormat=description omits the unit).
+	{"systemd init", regexp.MustCompile(`^Finished (apt-daily-upgrade\.service) - `), task("patching", "apt")},
+	{"systemd init", regexp.MustCompile(`^Finished (apparmor\.service) - `), protection("mandatory_access_control", "apparmor")},
 	// Clock synchronisation.
+	{"chronyd chrony", regexp.MustCompile(`^Selected source \S`), synchronised("source_selected")},
+	{"systemd-timesyncd", regexp.MustCompile(`^Contacted time server \S`), synchronised("server_contacted")},
+	{"systemd-timesyncd", regexp.MustCompile(`^Initial clock synchronization to `), synchronised("synchronised")},
 	{"chronyd chrony", regexp.MustCompile(`Can't synchronise: no selectable sources|No suitable source for synchronisation`), clock("no_sources")},
 	{"chronyd chrony", regexp.MustCompile(`System clock wrong by (-?\d{1,12}(?:\.\d{1,9})?) seconds`), clock("offset")},
 	{"chronyd chrony", regexp.MustCompile(`System clock was stepped by (-?\d{1,12}(?:\.\d{1,9})?) seconds|Forward time jump detected`), clock("stepped")},
@@ -111,7 +145,8 @@ var hostRules = []hostRule{
 	{"ntpd", regexp.MustCompile(`kernel reports TIME_ERROR|clock is now unsynced`), clock("unsynchronised")},
 	{"ntpd", regexp.MustCompile(`frequency error -?\d{1,9} PPM exceeds tolerance`), clock("frequency")},
 	{"ntpd", regexp.MustCompile(`spike_detect ([-+]?\d{1,12}(?:\.\d{1,9})?) s`), clock("jitter")},
-	{"ntpd", regexp.MustCompile(`(?:clock_step|time reset|time stepped by) ([-+]?\d{1,12}(?:\.\d{1,9})?) s`), clock("stepped")},
+	// ntpsec's ntpd and ntpdate write "CLOCK: time stepped by 0.318974".
+	{"ntpd ntpdate", regexp.MustCompile(`(?:clock_step|time reset|time stepped by) ([-+]?\d{1,12}(?:\.\d{1,9})?)(?: s)?`), clock("stepped")},
 	{"systemd-timesyncd", regexp.MustCompile(`Timed out waiting for reply from`), clock("source_unreachable")},
 	// Name resolution.
 	{"systemd-resolved", regexp.MustCompile(`Using degraded feature set`), dns("degraded")},
@@ -126,6 +161,8 @@ var hostRules = []hostRule{
 	{"usermod", regexp.MustCompile(`^delete '([^']{1,64})' from group '([^']{1,64})'`), account("group_removed", "user.name", "account.group")},
 	{"usermod", regexp.MustCompile(`^lock user '([^']{1,64})' password`), account("locked", "user.name")},
 	{"usermod", regexp.MustCompile(`^unlock user '([^']{1,64})' password`), account("unlocked", "user.name")},
+	// useradd logs a new account's own group the same way, under the person's
+	// login name; its "new user" line already records the account as a subject.
 	{"groupadd", regexp.MustCompile(`^new group: name=([^,\s]{1,64}),`), account("group_created", "account.group")},
 	{"groupdel", regexp.MustCompile(`^group '([^']{1,64})' removed$`), account("group_deleted", "account.group")},
 	{"gpasswd", regexp.MustCompile(`^user (\S{1,64}) added by \S{1,64} to group (\S{1,64})`), account("group_added", "user.name", "account.group")},
@@ -239,7 +276,11 @@ func hostEvent(e Event) *recognised {
 	case "clock.sync":
 		a := attributes("condition", "clock.condition", "offset_ms", "clock.offset_ms")
 		a["daemon"] = program
-		return r("clock.sync.degraded", "synchronise", a, false)
+		return r("clock.sync.changed", "synchronise", a, false)
+	case "task.completed":
+		return r("routine.task.completed", "complete", attributes("task", "task", "tool", "task.tool", "unit", "task.unit"), false)
+	case "protection.activated":
+		return r("system.protection.activated", "activate", attributes("protection", "protection", "mechanism", "protection.mechanism", "unit", "protection.unit"), false)
 	case "dns.failure":
 		a := attributes("reason", "dns.reason")
 		a["process"] = program
