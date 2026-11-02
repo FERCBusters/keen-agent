@@ -2,8 +2,10 @@ package main
 
 import (
 	"math"
+	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -75,14 +77,21 @@ func fromInit(apply func(*Event, []string)) func(*Event, []string) {
 	}
 }
 
+// finished matches systemd finishing a unit's start job, which it logs once
+// the run succeeds as "Finished <unit> - <description>." (systemd 257 on Debian
+// 13) or "Finished <description>." (systemd 249 on Ubuntu 22.04).
+func finished(unit, description string) *regexp.Regexp {
+	return regexp.MustCompile(`^Finished (?:` + regexp.QuoteMeta(unit) + ` - )?` + regexp.QuoteMeta(description) + `\.$`)
+}
+
 // task records a routine task's unit finishing its run.
-func task(kind, tool string) func(*Event, []string) {
-	return fromInit(set("task.completed", "success", map[string]string{"task": kind, "task.tool": tool}, "task.unit"))
+func task(kind, tool, unit string) func(*Event, []string) {
+	return fromInit(set("task.completed", "success", map[string]string{"task": kind, "task.tool": tool, "task.unit": unit}))
 }
 
 // protection records a protection taking effect, named by its unit.
-func protection(kind, mechanism string) func(*Event, []string) {
-	return fromInit(set("protection.activated", "success", map[string]string{"protection": kind, "protection.mechanism": mechanism}, "protection.unit"))
+func protection(kind, mechanism, unit string) func(*Event, []string) {
+	return fromInit(set("protection.activated", "success", map[string]string{"protection": kind, "protection.mechanism": mechanism, "protection.unit": unit}))
 }
 
 func dns(reason string) func(*Event, []string) {
@@ -109,10 +118,59 @@ func sudoDenied(e *Event, m []string) {
 	set("access.denied", "failure", map[string]string{"access.type": "sudo", "access.executable": path.Base(m[2])}, "user.name")(e, m)
 }
 
+// commandDirs are where a logged command's executable must be installed for
+// its name to be sent.
+var commandDirs = []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"}
+
+var commandName = regexp.MustCompile(`^[A-Za-z0-9_.+-]{1,64}$`)
+
+// shellCommand records a command run in a root shell that logs each command
+// with logger, as "shell user [<pid>]: Executing command [CWD=<dir> ;
+// <status>]: <command>". journald records the sender's user ID and transport
+// itself, so only root writing to the syslog socket counts: another account,
+// a container's output relayed by a root daemon, or a syslog file adds nothing.
+// The command line is typed text that can hold secrets, paths and names, so
+// only the name of a program installed in commandDirs is sent; its directory
+// and status are not.
+func shellCommand(e *Event, m []string) {
+	if e.Fields["_UID"] != "0" || e.Fields["_TRANSPORT"] != "syslog" {
+		return
+	}
+	e.Action, e.Outcome = "shell.command", "info"
+	e.Fields["user.name"] = e.Fields["process.name"]
+	if m[1] != "126" && m[1] != "127" {
+		e.Fields["shell.executable"] = installed(m[2])
+	}
+}
+
+// installed names the program a command line starts with, when it is a plain
+// name or a path into commandDirs and that directory holds it as an executable
+// file, and is empty otherwise.
+func installed(command string) string {
+	words := strings.FieldsFunc(command, func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' })
+	if len(words) == 0 {
+		return ""
+	}
+	word := strings.TrimPrefix(words[0], `\`)
+	name := path.Base(word)
+	if !commandName.MatchString(name) || strings.Contains(word, "/") && !slices.Contains(commandDirs, path.Dir(word)) {
+		return ""
+	}
+	for _, dir := range commandDirs {
+		if info, err := os.Stat(path.Join(dir, name)); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return name
+		}
+	}
+	return ""
+}
+
 // fail2banBan records a ban by its jail; the banned address is not sent.
 var fail2banBan = set("security.alert", "info", map[string]string{"alert.product": "fail2ban", "alert.category": "ban", "alert.level": "6", "alert.description": "Address banned"}, "alert.rule_id")
 
 var hostRules = []hostRule{
+	// Commands logged by a shell, ahead of the rules for any program, so a
+	// command line quoting a fault or a failed lookup is not taken for one.
+	{"", regexp.MustCompile(`^shell user \[\d{1,10}\]: Executing command \[CWD=(?s:.*?) ; (\d{1,3})\]: (?s:(.*))$`), shellCommand},
 	// Kernel faults.
 	{"kernel", regexp.MustCompile(`Killed process \d+ \(([^)]{1,64})\)`), fault("oom_kill", "fault.process")},
 	{"kernel", regexp.MustCompile(`(?:I/O error|critical medium error)[^\n]{0,64}?\bdev ([a-z0-9_-]{1,32})`), fault("io_error", "fault.device")},
@@ -129,11 +187,12 @@ var hostRules = []hostRule{
 	{"systemd-coredump", regexp.MustCompile(`^Process \d+ \(([^)]{1,64})\) of user \d+ dumped core`), fault("core_dump", "fault.process")},
 	{"", regexp.MustCompile(`server reached (?:pm\.)?max_children setting`), fault("worker_limit")},
 	{"", regexp.MustCompile(`No space left on device`), fault("disk_full")},
-	// Routine tasks and protections: systemd reports a unit's start job
-	// finishing as "Finished <unit> - <description>." once the run succeeds
-	// (systemd 257 on Debian 13; StatusUnitFormat=description omits the unit).
-	{"systemd init", regexp.MustCompile(`^Finished (apt-daily-upgrade\.service) - `), task("patching", "apt")},
-	{"systemd init", regexp.MustCompile(`^Finished (apparmor\.service) - `), protection("mandatory_access_control", "apparmor")},
+	// Routine tasks and protections, as their units finish. certbot renews
+	// quietly and fails its unit when a renewal fails. ufw's unit is left out:
+	// it also finishes when ufw is disabled.
+	{"systemd init", finished("apt-daily-upgrade.service", "Daily apt upgrade and clean activities"), task("patching", "apt", "apt-daily-upgrade.service")},
+	{"systemd init", finished("certbot.service", "Certbot"), task("certificate_renewal", "certbot", "certbot.service")},
+	{"systemd init", finished("apparmor.service", "Load AppArmor profiles"), protection("mandatory_access_control", "apparmor", "apparmor.service")},
 	// Clock synchronisation.
 	{"chronyd chrony", regexp.MustCompile(`^Selected source \S`), synchronised("source_selected")},
 	{"systemd-timesyncd", regexp.MustCompile(`^Contacted time server \S`), synchronised("server_contacted")},
@@ -145,7 +204,7 @@ var hostRules = []hostRule{
 	{"ntpd", regexp.MustCompile(`kernel reports TIME_ERROR|clock is now unsynced`), clock("unsynchronised")},
 	{"ntpd", regexp.MustCompile(`frequency error -?\d{1,9} PPM exceeds tolerance`), clock("frequency")},
 	{"ntpd", regexp.MustCompile(`spike_detect ([-+]?\d{1,12}(?:\.\d{1,9})?) s`), clock("jitter")},
-	// ntpsec's ntpd and ntpdate write "CLOCK: time stepped by 0.318974".
+	// ntpsec's ntpd and ntpdate write "CLOCK: time stepped by 0.425731".
 	{"ntpd ntpdate", regexp.MustCompile(`(?:clock_step|time reset|time stepped by) ([-+]?\d{1,12}(?:\.\d{1,9})?)(?: s)?`), clock("stepped")},
 	{"systemd-timesyncd", regexp.MustCompile(`Timed out waiting for reply from`), clock("source_unreachable")},
 	// Name resolution.
@@ -300,6 +359,10 @@ func hostEvent(e Event) *recognised {
 		return r("user.authenticated", "authenticate", attributes("service", "auth.service", "method", "auth.method"), true)
 	case "privilege.switch":
 		return r("privileged.action.completed", "execute", map[string]string{"mechanism": f["auth.service"], "executable": f["auth.service"]}, true)
+	case "shell.command":
+		out := r("privileged.action.completed", "execute", map[string]string{"mechanism": "shell", "executable": f["shell.executable"]}, true)
+		out.component = "shell"
+		return out
 	case "access.denied":
 		return r("access.denied", "deny", attributes("audit_type", "access.type", "executable", "access.executable"), true)
 	case "security.alert":

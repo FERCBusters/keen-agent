@@ -15,8 +15,8 @@ organisation's framework mapping rules.
   sudo), account and group changes, kernel and service faults (out-of-memory
   kills, I/O and filesystem errors, crashes, failed units), clock
   synchronisation, name-resolution problems, PHP and Drupal errors, the daily
-  apt upgrade job completing, AppArmor profiles loaded at boot, and fail2ban
-  and OSSEC alerts, recognised in selected logs. Each source chooses
+  apt upgrade job and certbot's renewal runs completing, AppArmor profiles
+  loaded at boot, and fail2ban and OSSEC alerts, recognised in selected logs. Each source chooses
   whether to send recognised events only, events with their redacted source
   lines, or every line.
 - **Workstations** (Windows, macOS, Linux): disk encryption, screen locking,
@@ -156,7 +156,7 @@ non-regular files are refused.
 | Parser | Recognised events |
 | --- | --- |
 | `dpkg`, `apt`, `dnf` | `software.package.changed` |
-| `syslog` (journal or file) | `user.authenticated` (SSH, su, sudo, console and Drupal sign-ins), `privileged.action.completed` (sudo, su), `access.denied` (sudo refusals, AppArmor, SELinux), `security.alert.generated` (fail2ban bans), and with KEEN's 2026.11 catalogue: `system.fault.detected`, `clock.sync.changed`, `dns.lookup.failed`, `application.error.logged`, `user.account.changed`, `routine.task.completed`, `system.protection.activated` |
+| `syslog` (journal or file) | `user.authenticated` (SSH, su, sudo, console and Drupal sign-ins), `privileged.action.completed` (sudo, su, commands a root shell logs), `access.denied` (sudo refusals, AppArmor, SELinux), `security.alert.generated` (fail2ban bans), and with KEEN's 2026.11 catalogue: `system.fault.detected`, `clock.sync.changed`, `dns.lookup.failed`, `application.error.logged`, `user.account.changed`, `routine.task.completed`, `system.protection.activated` |
 | `auditd` | `user.authenticated`, `privileged.action.completed`, `access.denied` (including SELinux and AppArmor) |
 | `php` | `application.error.logged` (fatal, parse and recoverable errors; 2026.11 catalogue) |
 | `ossec` | `security.alert.generated` ([docs/ossec.md](docs/ossec.md)) |
@@ -171,18 +171,35 @@ The `syslog` parser recognises these messages:
 | `dns.lookup.failed` | `Temporary failure in name resolution`, `Could not resolve host`, failed `getaddrinfo`, and systemd-resolved falling back to a degraded feature set or failing DNSSEC validation; the name looked up is not sent |
 | `application.error.logged` | PHP fatal, parse and recoverable errors from any program, and Drupal watchdog entries (syslog module) of priority error or worse, or PHP-type errors |
 | `user.account.changed` | `useradd`, `userdel`, `usermod`, `groupadd`, `groupdel`, `gpasswd`, `passwd` and `chpasswd`, and Drupal accounts created, deleted or blocked |
-| `routine.task.completed` | systemd finishing `apt-daily-upgrade.service`, the daily apt job that runs unattended-upgrades where it is installed and enabled (`task` `patching`). The event shows the job ran to completion: unattended-upgrades records the updates it installs, and its own errors, in its log. A job that fails is a `system.fault.detected` failed unit |
+| `routine.task.completed` | systemd finishing `apt-daily-upgrade.service`, the daily apt job that runs unattended-upgrades where it is installed and enabled (`task` `patching`). The event shows the job ran to completion: unattended-upgrades records the updates it installs, and its own errors, in its log. Also systemd finishing `certbot.service` (`task` `certificate_renewal`): certbot renews quietly and fails its unit when any renewal fails. A job that fails is a `system.fault.detected` failed unit |
 | `system.protection.activated` | systemd finishing `apparmor.service`, which loads the AppArmor profiles at boot (`protection` `mandatory_access_control`) |
 
 Completed units are recognised only in the journal, from systemd itself: the
 record must come from process 1, which journald records for each sender, so a
 program logging as `systemd` cannot report another unit's run. A syslog file
 carries the process ID its sender wrote, so its unit results are not evidence.
-The messages are matched in the `Finished <unit> - <description>.` form that
-systemd 257 logs on Debian 13; a host set to `StatusUnitFormat=description`
-logs the description alone and is not recognised. Other recognised messages
-are as trustworthy as the log they come from, since a local program can write
-a message under any name.
+The messages are matched as systemd 257 logs them on Debian 13,
+`Finished <unit> - <description>.`, and as systemd 249 logs them on Ubuntu
+22.04, `Finished <description>.`. ufw's unit is not used: it finishes when ufw
+is disabled as well. In a container where AppArmor is not started,
+`apparmor.service` still finishes. Other recognised messages are as
+trustworthy as the log they come from, since a local program can write a
+message under any name.
+
+Commands run in a root shell are recognised when the shell logs each one with
+`logger` as `shell user [<pid>]: Executing command [CWD=<dir> ; <status>]:
+<command>`, for example from a `PROMPT_COMMAND` hook. They become
+`privileged.action.completed` with the mechanism `shell` and the account as a
+pseudonymous subject. The executable is named only when the command starts
+with a program installed in `/usr/local/sbin`, `/usr/local/bin`, `/usr/sbin`,
+`/usr/bin`, `/sbin` or `/bin` and ran (status other than 126 or 127), so a
+mistyped secret or a path into a home directory stays on the host; builtins
+such as `cd`, aliases and functions are recorded without one. In the `events` mode the
+rest of the command line, its directory and its status stay on the host;
+`events_with_lines` and `all_lines` also send the redacted line. Only journal
+records that journald attributes to user 0 and the syslog socket count, so
+another account's shell, an account writing such a line under another name,
+and a container's output relayed by a root daemon add nothing.
 
 KEEN grants the 2026.11 catalogue in its enrolment, renewal and health
 replies once it accepts these event types. Until then the agent keeps to the

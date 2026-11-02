@@ -26,11 +26,11 @@ evidence_mode: events
 redact:
   - '(?i)Bearer\s+[A-Za-z0-9._~+/=-]+'
 sources:
-  # The whole journal: sign-ins, sudo and su, account changes, refused access,
-  # kernel and service faults, clock synchronisation, DNS problems, PHP and
-  # Drupal errors, fail2ban bans, the daily apt upgrade job completing and
-  # AppArmor loading at boot are recognised; other lines are hashed, or sent in
-  # all_lines.
+  # The whole journal: sign-ins, sudo, su and commands a root shell logs,
+  # account changes, refused access, kernel and service faults, clock
+  # synchronisation, DNS problems, PHP and Drupal errors, fail2ban bans, the
+  # daily apt upgrade job and certbot completing, and AppArmor loading at boot
+  # are recognised; other lines are hashed, or sent in all_lines.
   - name: system
     kind: journal
     parser: syslog

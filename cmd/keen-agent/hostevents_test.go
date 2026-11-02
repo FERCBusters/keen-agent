@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,13 +39,13 @@ func TestHostMessagesBecomeCatalogueEvents(t *testing.T) {
 		{"disk-full", "syslog", "Jan  1 00:00:00 web postgres[77]: could not write to file \"base/pgsql_tmp\": No space left on device", "system.fault.detected", "failure", map[string]any{"component": "postgres", "fault": "disk_full"}, false},
 		{"workers", "syslog", "Jan  1 00:00:00 web php-fpm8.2[900]: [WARNING] [pool www] server reached pm.max_children setting (5), consider raising it", "system.fault.detected", "failure", map[string]any{"fault": "worker_limit"}, false},
 		{"chrony", "syslog", "Jan  1 00:00:00 web chronyd[500]: System clock wrong by -1.234567 seconds", "clock.sync.changed", "failure", map[string]any{"daemon": "chronyd", "condition": "offset", "offset_ms": int64(-1235)}, false},
-		{"chrony-stepped", "syslog", "Jan  1 00:00:00 web chronyd[500]: System clock was stepped by 1.208229 seconds", "clock.sync.changed", "failure", map[string]any{"condition": "stepped", "offset_ms": int64(1208)}, false},
+		{"chrony-stepped", "syslog", "Jan  1 00:00:00 web chronyd[500]: System clock was stepped by 1.456789 seconds", "clock.sync.changed", "failure", map[string]any{"condition": "stepped", "offset_ms": int64(1457)}, false},
 		{"chrony-selected", "syslog", "Jan  1 00:00:00 web chronyd[500]: Selected source 192.0.2.1 (ntp.example)", "clock.sync.changed", "success", map[string]any{"daemon": "chronyd", "condition": "source_selected"}, false},
 		{"chrony-selected-v6", "syslog", "Jan  1 00:00:00 web chronyd[500]: Selected source 2001:db8::123 (ntp.example)", "clock.sync.changed", "success", map[string]any{"condition": "source_selected"}, false},
 		{"timesyncd-contacted", "syslog", "Jan  1 00:00:00 web systemd-timesyncd[400]: Contacted time server 192.0.2.1:123 (ntp.example).", "clock.sync.changed", "success", map[string]any{"daemon": "systemd-timesyncd", "condition": "server_contacted"}, false},
 		{"timesyncd-initial", "syslog", "Jan  1 00:00:00 web systemd-timesyncd[400]: Initial clock synchronization to Thu 2026-01-01 00:00:00.123456 UTC.", "clock.sync.changed", "success", map[string]any{"condition": "synchronised"}, false},
 		{"ntpsec-unsynchronised", "syslog", "Jan  1 00:00:00 web ntpd[600]: CLOCK: kernel reports TIME_ERROR: 0x41: Clock Unsynchronized", "clock.sync.changed", "failure", map[string]any{"daemon": "ntpd", "condition": "unsynchronised"}, false},
-		{"ntpdate-stepped", "syslog", "Jan  1 00:00:00 web ntpdate[700]: CLOCK: time stepped by 0.318974", "clock.sync.changed", "failure", map[string]any{"daemon": "ntpdate", "condition": "stepped", "offset_ms": int64(319)}, false},
+		{"ntpdate-stepped", "syslog", "Jan  1 00:00:00 web ntpdate[700]: CLOCK: time stepped by 0.425731", "clock.sync.changed", "failure", map[string]any{"daemon": "ntpdate", "condition": "stepped", "offset_ms": int64(426)}, false},
 		{"jitter", "syslog", "Jan  1 00:00:00 web ntpd[600]: 0.0.0.0 0617 07 spike_detect +0.523217 s", "clock.sync.changed", "failure", map[string]any{"daemon": "ntpd", "condition": "jitter", "offset_ms": int64(523)}, false},
 		{"resolved", "syslog", "Jan  1 00:00:00 web systemd-resolved[300]: Using degraded feature set UDP instead of UDP+EDNS0 for DNS server 192.0.2.53.", "dns.lookup.failed", "failure", map[string]any{"process": "systemd-resolved", "reason": "degraded"}, false},
 		{"curl", "syslog", "Jan  1 00:00:00 web backup.sh[800]: curl: (6) Could not resolve host: backups.internal", "dns.lookup.failed", "failure", map[string]any{"process": "backup.sh", "reason": "unresolved"}, false},
@@ -92,7 +94,8 @@ func TestHostMessagesBecomeCatalogueEvents(t *testing.T) {
 		})
 	}
 	// Ordinary messages, the copies shadow tools log for the shadow files, the
-	// group useradd creates under a person's login name, other units finishing,
+	// groups useradd and userdel create and remove with an account, other units
+	// finishing,
 	// unit results in a syslog file, where the sender writes its own process ID,
 	// and Drupal entries that are neither errors nor sign-ins are not evidence.
 	for _, line := range []string{
@@ -104,10 +107,12 @@ func TestHostMessagesBecomeCatalogueEvents(t *testing.T) {
 		"Jan  1 00:00:00 web useradd[1000]: new group: name=alice, GID=1001",
 		"Jan  1 00:00:00 web chronyd[500]: Source 192.0.2.1 replaced with 192.0.2.2 (ntp.example)",
 		"Jan  1 00:00:00 web systemd-timesyncd[400]: Network configuration changed, trying to establish connection.",
-		"Jan  1 00:00:00 web ntpdate[700]: 2026-01-01 00:00:00.123456 (+0000) +0.318974 +/- 0.004764 ntp.example 192.0.2.1 s1 no-leap",
+		"Jan  1 00:00:00 web ntpdate[700]: 2026-01-01 00:00:00.123456 (+0000) +0.425731 +/- 0.003125 ntp.example 192.0.2.1 s1 no-leap",
 		"Jan  1 00:00:00 web usermod[1001]: add 'alice' to shadow group 'sudo'",
 		"Jan  1 00:00:00 web groupadd[1002]: group added to /etc/group: name=deploy, GID=1002",
 		"Jan  1 00:00:00 web kernel: [0.1] EDAC MC: Ver: 3.0.0",
+		"Jan  1 00:00:00 web userdel[1003]: delete 'alice' from group 'sudo'",
+		"Jan  1 00:00:00 web userdel[1003]: removed group 'alice' owned by 'alice'",
 		"Jan  1 00:00:00 web fake[5]: [sshd] Ban 192.0.2.7",
 		drupal + "content|192.0.2.9|https://example.org/node/add||1||article: added Hello.",
 		drupal + "php|192.0.2.9|https://example.org/node/1||5||Warning: Undefined variable $x in y()",
@@ -149,8 +154,13 @@ func TestUnitResultsComeFromSystemdItself(t *testing.T) {
 		message, eventType string
 		attributes         map[string]any
 	}{
+		// systemd 257 names the unit before its description; systemd 249 logs the description alone.
 		{"Finished apt-daily-upgrade.service - Daily apt upgrade and clean activities.", "routine.task.completed", map[string]any{"task": "patching", "tool": "apt", "unit": "apt-daily-upgrade.service"}},
+		{"Finished Daily apt upgrade and clean activities.", "routine.task.completed", map[string]any{"task": "patching", "unit": "apt-daily-upgrade.service"}},
+		{"Finished certbot.service - Certbot.", "routine.task.completed", map[string]any{"task": "certificate_renewal", "tool": "certbot", "unit": "certbot.service"}},
+		{"Finished Certbot.", "routine.task.completed", map[string]any{"task": "certificate_renewal", "unit": "certbot.service"}},
 		{"Finished apparmor.service - Load AppArmor profiles.", "system.protection.activated", map[string]any{"protection": "mandatory_access_control", "mechanism": "apparmor", "unit": "apparmor.service"}},
+		{"Finished Load AppArmor profiles.", "system.protection.activated", map[string]any{"mechanism": "apparmor", "unit": "apparmor.service"}},
 	} {
 		envs := finished(tc.message, "1", "0")
 		if len(envs) != 1 || envs[0]["event_type"] != tc.eventType || envs[0]["event"].(map[string]any)["outcome"] != "success" {
@@ -170,6 +180,105 @@ func TestUnitResultsComeFromSystemdItself(t *testing.T) {
 		if envs := finished(tc.message, "4242", "1000"); len(envs) != 0 {
 			t.Fatal(envs)
 		}
+	}
+	// ufw's unit finishes when ufw is disabled too, and other units, a unit's
+	// deactivation and a failed start are not completed runs.
+	for _, message := range []string{
+		"Finished Uncomplicated firewall.",
+		"Finished ufw.service - Uncomplicated firewall.",
+		"Finished apt-daily.service - Daily apt download activities.",
+		"Finished Certbot renewal.",
+		"apt-daily-upgrade.service: Deactivated successfully.",
+		"Failed to start certbot.service - Certbot.",
+	} {
+		if envs := finished(message, "1", "0"); len(envs) != 0 {
+			t.Fatalf("%q became %v", message, envs)
+		}
+	}
+}
+
+func TestRootShellCommandsArePrivilegedActions(t *testing.T) {
+	// Programs installed in the system directories, for this test.
+	bin := t.TempDir()
+	for _, name := range []string{"vim.tiny", "git", "deploy-app", "curl", "grep", "mysql", "make"} {
+		if err := os.WriteFile(filepath.Join(bin, name), nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "notes.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := commandDirs
+	t.Cleanup(func() { commandDirs = saved })
+	commandDirs = []string{bin}
+
+	z := grantedSealer(t, "events", november)
+	source := Source{Name: "journal", Kind: "journal", Parser: "syslog"}
+	logged := func(tag, uid, transport, status, command string) []map[string]any {
+		e := parse(Config{}, source, "shell user [4242]: Executing command [CWD=/srv/secret-project ; "+status+"]: "+command, time.Now())
+		e.Fields["SYSLOG_IDENTIFIER"], e.Fields["_UID"], e.Fields["_PID"], e.Fields["_TRANSPORT"] = tag, uid, "4243", transport
+		normalizeJournal(&e)
+		envs, err := z.envelopes(source, e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return envs
+	}
+	for _, tc := range []struct{ status, command, executable string }{
+		{"0", "vim.tiny notes.txt", "vim.tiny"},
+		{"141", `\git log`, "git"},
+		{"0", bin + "/deploy-app", "deploy-app"},
+		{"0", "grep 'No space left on device' /var/log/syslog", "grep"},
+		{"0", "make\nmake install", "make"},
+		// Typed text that names no installed program stays on the host.
+		{"0", "cd /srv/secret-project/", ""},
+		{"0", "notes.txt", ""},
+		{"0", "/home/alice/bin/make", ""},
+		{"0", "./alice-fix-perms.sh", ""},
+		{"0", "db01.corp.example.org", ""},
+		{"127", "hunter2secret", ""},
+		{"127", "git", ""},
+		{"0", "TOKEN=hunter2secret curl https://example.org", ""},
+		{"0", `MYSQL_PWD="correct horse" mysql`, ""},
+		{"0", `X=a\ hunter2secret make`, ""},
+		{"0", "X=a hunter2secret make", ""},
+		{"0", " hunter2secret", ""},
+		{"0", "(cd /srv/secret-project && make)", ""},
+	} {
+		envs := logged("root", "0", "syslog", tc.status, tc.command)
+		if len(envs) != 1 || envs[0]["event_type"] != "privileged.action.completed" {
+			t.Fatalf("%q: %v", tc.command, envs)
+		}
+		got := envs[0]["attributes"].(map[string]any)
+		// An absent executable is left out of the envelope.
+		if name, _ := got["executable"].(string); got["mechanism"] != "shell" || name != tc.executable {
+			t.Fatalf("%q: %v", tc.command, got)
+		}
+		if _, ok := envs[0]["subject"]; !ok {
+			t.Fatalf("%q: no subject", tc.command)
+		}
+		text := canonical(t, envs[0])
+		for _, secret := range []string{"secret-project", "notes.txt", "hunter2", "horse", "alice", "example.org", "No space left", "/var/log/syslog"} {
+			if strings.Contains(text, secret) {
+				t.Fatalf("%q disclosed: %s", secret, text)
+			}
+		}
+	}
+	// journald records the sender's user ID and transport, so another
+	// account's shell, that account writing as "root", and a root daemon
+	// relaying a container's or service's output are not privileged actions;
+	// neither is their command line taken for a fault.
+	for _, sender := range [][3]string{{"miguel", "1001", "syslog"}, {"root", "1001", "syslog"}, {"web", "0", "journal"}, {"root", "0", "stdout"}} {
+		for _, command := range []string{"sudo su", "grep 'No space left on device' /var/log/syslog"} {
+			if envs := logged(sender[0], sender[1], sender[2], "0", command); len(envs) != 0 {
+				t.Fatalf("%v %q: %v", sender, command, envs)
+			}
+		}
+	}
+	// A syslog file carries no sender ID.
+	file := classify(t, z, Source{Name: "syslog", Parser: "syslog"}, "Jan  1 00:00:00 web root[5]: shell user [5]: Executing command [CWD=/root ; 0]: ls")
+	if len(file) != 0 {
+		t.Fatal(file)
 	}
 }
 
