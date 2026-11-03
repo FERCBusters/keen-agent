@@ -20,8 +20,8 @@ organisation's framework mapping rules.
   whether to send recognised events only, events with their redacted source
   lines, or every line.
 - **Workstations** (Windows, macOS, Linux): disk encryption, screen locking,
-  antivirus, firewall and automatic updates, measured hourly, with a record of
-  what each run could and could not measure.
+  antivirus, firewall and automatic updates, with a record of what each run
+  could and could not measure.
 
 The evidence format, catalogue and protocol are specified in
 [docs/evidence-format.md](docs/evidence-format.md).
