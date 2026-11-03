@@ -1,9 +1,9 @@
 [Unit]
-Description=Collect KEEN host security posture hourly
+Description=Collect KEEN host security posture every 12 hours
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=1h
+OnUnitActiveSec=12h
 RandomizedDelaySec=5min
 AccuracySec=1min
 
