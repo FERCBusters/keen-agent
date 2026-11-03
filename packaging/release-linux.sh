@@ -107,5 +107,6 @@ mkdir -p dist/packages
 cp -a "$stage/." dist/packages/
 if "$sync_repo"; then
  rsync -aHPvz --exclude=.git --delete "$RPM_REPO_ROOT/" "$RPM_REMOTE/"
+ builtin cd "$DEB_REPO" && bash upload.sh
 fi
 printf 'Released %s. Signed packages are in dist/packages/.\n' "$version"
