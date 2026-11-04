@@ -169,7 +169,7 @@
     "endpoint.session_inventory.observed": {
       "class": "observation",
       "object_type": "session_inventory",
-      "summary": "Graphical sessions ({component}): {reason_code}",
+      "summary": "Graphical sessions via {component}: {facts.graphical_session_count|reason_code}",
       "subject": "forbidden",
       "payload": "forbidden",
       "additional_facts": "reject",
