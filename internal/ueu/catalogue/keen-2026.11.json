@@ -181,7 +181,7 @@
     "software.package.changed": {
       "class": "event",
       "object_type": "package",
-      "summary": "Package {attributes.action} via {attributes.manager}: {attributes.package}",
+      "summary": "Package {attributes.action} via {attributes.manager}: {attributes.package|attributes.packages|'no packages named'}",
       "subject": "optional",
       "payload": "optional",
       "additional_attributes": "reject",
@@ -213,7 +213,7 @@
     "privileged.action.completed": {
       "class": "event",
       "object_type": "command",
-      "summary": "Privileged action via {attributes.mechanism}: {attributes.executable}",
+      "summary": "Privileged action via {attributes.mechanism}: {attributes.executable|'command not named'}",
       "subject": "optional",
       "payload": "optional",
       "additional_attributes": "reject",
@@ -227,7 +227,7 @@
     "access.denied": {
       "class": "event",
       "object_type": "resource",
-      "summary": "Access denied ({attributes.audit_type}): {attributes.executable}",
+      "summary": "Access denied ({attributes.audit_type}): {attributes.executable|'program not named'}",
       "subject": "optional",
       "payload": "optional",
       "additional_attributes": "reject",
