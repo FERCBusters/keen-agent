@@ -215,6 +215,26 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	}
 	return b.Buffer.Write(p)
 }
+
+// headBuffer keeps the first limit bytes written and discards the rest
+// without failing the writer.
+type headBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *headBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.Len(); room > 0 {
+		b.Buffer.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
+func (b *headBuffer) firstLine() string {
+	line, _, _ := strings.Cut(strings.TrimSpace(b.String()), "\n")
+	return strings.ToValidUTF8(strings.TrimSpace(line), "")
+}
+
 func collectJournal(c Config, s Source, sp *Spool) error {
 	key := "journal:" + s.Name
 	var st Checkpoint
@@ -225,7 +245,8 @@ func collectJournal(c Config, s Source, sp *Spool) error {
 	if st.Cursor != "" {
 		args = append(args, "--after-cursor="+st.Cursor)
 	} else {
-		args = append(args, "--since="+time.Now().Add(-c.lookback).Format(time.RFC3339))
+		// Epoch form: systemd before 254 rejects RFC 3339 ("T" and a numeric offset).
+		args = append(args, "--since=@"+strconv.FormatInt(time.Now().Add(-c.lookback).Unix(), 10))
 	}
 	for _, unit := range s.Units {
 		args = append(args, "--unit="+unit)
@@ -238,8 +259,14 @@ func collectJournal(c Config, s Source, sp *Spool) error {
 	cmd := exec.CommandContext(ctx, "/usr/bin/journalctl", args...)
 	out := &boundedBuffer{limit: 2 * 1024 * 1024}
 	cmd.Stdout = out
-	cmd.Stderr = io.Discard
+	// journalctl's own complaint is the only way to tell a permission problem
+	// from a rejected argument or cursor; keep a bounded first line of it.
+	stderr := &headBuffer{limit: 512}
+	cmd.Stderr = stderr
 	if e := cmd.Run(); e != nil {
+		if reason := stderr.firstLine(); reason != "" {
+			return fmt.Errorf("journal read failed: %s: %w", reason, e)
+		}
 		return fmt.Errorf("journal read failed (check permissions/cursor): %w", e)
 	}
 	scan := bufio.NewScanner(bytes.NewReader(out.Bytes()))
