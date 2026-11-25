@@ -18,8 +18,8 @@ var nginxMethod = regexp.MustCompile(`"(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH) 
 var nginx = regexp.MustCompile(`"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH) ([^ ]+) HTTP/[^" ]+" ([0-9]{3})`)
 
 func parse(c Config, s Source, raw string, ts time.Time) Event {
-	if s.Parser == "ossec" {
-		raw = c.redactOSSEC(raw)
+	if jsonRecords(s.Parser) {
+		raw = c.redactJSON(raw)
 	} else {
 		raw = c.redact(raw)
 	}
@@ -31,6 +31,8 @@ func parse(c Config, s Source, raw string, ts time.Time) Event {
 	switch s.Parser {
 	case "ossec":
 		parseOSSEC(&e)
+	case "tetragon":
+		parseTetragon(&e, s)
 	case "syslog":
 		// RFC 5424 and ISO timestamps retain their zone. RFC 3164 uses host local time
 		// and the nearest previous year at a New Year boundary.

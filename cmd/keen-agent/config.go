@@ -30,6 +30,10 @@ type Source struct {
 	Multiline                   string        `yaml:"multiline_start"`
 	EvidenceMode                string        `yaml:"evidence_mode"`
 	include, exclude, multiline *regexp.Regexp
+
+	// TetragonLevels overrides the default 0..10 level of a Tetragon policy's
+	// alerts, keyed by policy name (process_exec for watched program starts).
+	TetragonLevels map[string]int `yaml:"tetragon_levels"`
 }
 
 // EnrollmentConfig names the one-time credential exchanged for a key binding:
@@ -141,9 +145,20 @@ func config(path string) (Config, error) {
 			return c, errors.New("source kind must be file or journal")
 		}
 		switch s.Parser {
-		case "raw", "json", "syslog", "nginx", "php", "dpkg", "apt", "dnf", "auditd", "ossec", "posture":
+		case "raw", "json", "syslog", "nginx", "php", "dpkg", "apt", "dnf", "auditd", "ossec", "tetragon", "posture":
 		default:
 			return c, fmt.Errorf("unknown parser for %s", s.Name)
+		}
+		if len(s.TetragonLevels) > 0 && s.Parser != "tetragon" {
+			return c, errors.New("tetragon_levels applies only to the tetragon parser")
+		}
+		if len(s.TetragonLevels) > 64 {
+			return c, errors.New("at most 64 tetragon_levels are allowed")
+		}
+		for policy, level := range s.TetragonLevels {
+			if !tetragonPolicyName.MatchString(policy) || level < 0 || level > 10 {
+				return c, fmt.Errorf("%s: tetragon_levels needs policy names and levels from 0 to 10", s.Name)
+			}
 		}
 		if s.Parser == "posture" && (s.Kind != "journal" || len(s.Units) != 0 || len(s.Paths) != 0) {
 			return c, errors.New("posture requires kind journal and no units/paths; trusted collector units are selected automatically")

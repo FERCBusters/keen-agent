@@ -160,6 +160,7 @@ non-regular files are refused.
 | `auditd` | `user.authenticated`, `privileged.action.completed`, `access.denied` (including SELinux and AppArmor) |
 | `php` | `application.error.logged` (fatal, parse and recoverable errors; 2026.11 catalogue) |
 | `ossec` | `security.alert.generated` ([docs/ossec.md](docs/ossec.md)) |
+| `tetragon` | `security.alert.generated` (tracing policy alerts and watched program starts), `privileged.action.completed` (gaining root through sudo, su, pkexec, doas or run0) ([docs/tetragon.md](docs/tetragon.md)) |
 | `raw`, `json`, `nginx` | lines only (`all_lines` mode) |
 
 The `syslog` parser recognises these messages:

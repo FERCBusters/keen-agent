@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"net/netip"
 	"sort"
 	"strconv"
@@ -14,11 +13,11 @@ import (
 // event IDs and collector credentials never come from the alert payload.
 func parseOSSEC(e *Event) {
 	var data map[string]any
-	if !ossecObject(e.Raw, &data) {
+	if !jsonObject(e.Raw, &data) {
 		e.Fields["parse_status"] = "invalid_json"
 		return
 	}
-	get := func(path string) string { return ossecValue(ossecLookup(data, path)) }
+	get := func(path string) string { return jsonValue(jsonLookup(data, path)) }
 	first := func(paths ...string) string {
 		for _, path := range paths {
 			if value := get(path); value != "" {
@@ -78,7 +77,7 @@ func parseOSSEC(e *Event) {
 	} else {
 		e.Fields["timestamp_status"] = "collection_time_fallback"
 	}
-	groups := ossecGroups(ossecLookup(data, "rule.groups"))
+	groups := ossecGroups(jsonLookup(data, "rule.groups"))
 	if len(groups) > 0 {
 		encoded, _ := json.Marshal(groups)
 		put("ossec.rule.groups", string(encoded))
@@ -120,28 +119,6 @@ func parseOSSEC(e *Event) {
 	}
 }
 
-func ossecLookup(data map[string]any, path string) any {
-	var current any = data
-	for _, key := range strings.Split(path, ".") {
-		object, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-		current = object[key]
-	}
-	return current
-}
-func ossecValue(value any) string {
-	switch v := value.(type) {
-	case string:
-		return v
-	case json.Number:
-		return v.String()
-	case bool:
-		return strconv.FormatBool(v)
-	}
-	return ""
-}
 func ossecGroups(value any) []string {
 	groups := []string{}
 	switch v := value.(type) {
@@ -173,12 +150,12 @@ func ossecGroups(value any) []string {
 }
 func ossecTime(data map[string]any) (time.Time, bool) {
 	// Legacy TimeStamp is epoch milliseconds; prefer it over zone-less text.
-	if value := ossecValue(data["TimeStamp"]); value != "" {
+	if value := jsonValue(data["TimeStamp"]); value != "" {
 		if ms, err := strconv.ParseInt(value, 10, 64); err == nil && ms > 0 && ms <= 9223372036854 {
 			return time.UnixMilli(ms), true
 		}
 	}
-	text := ossecValue(data["timestamp"])
+	text := jsonValue(data["timestamp"])
 	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999999-0700", "2006 Jan 02 15:04:05", "2006 Jan _2 15:04:05"} {
 		if stamp, err := time.ParseInLocation(layout, text, time.Local); err == nil && stamp.Year() >= 1970 && stamp.Year() < 2262 {
 			return stamp, true
@@ -201,68 +178,7 @@ func flattenOSSEC(fields map[string]string, prefix string, value any, depth int)
 				flattenOSSEC(fields, prefix+"."+key, object[key], depth+1)
 			}
 		}
-	} else if text := ossecValue(value); text != "" && len(prefix) <= 110 && len(text) <= 4096 {
+	} else if text := jsonValue(value); text != "" && len(prefix) <= 110 && len(text) <= 4096 {
 		fields[prefix] = text
 	}
-}
-
-func ossecObject(raw string, data *map[string]any) bool {
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.UseNumber()
-	if decoder.Decode(data) != nil || *data == nil {
-		return false
-	}
-	var extra any
-	return decoder.Decode(&extra) == io.EOF
-}
-
-// Decode string escapes before applying redaction, then serialize safely. The
-// iterative walk avoids recursive traversal of attacker-supplied object nesting.
-func (c Config) redactOSSEC(raw string) string {
-	if len(c.redactors) == 0 {
-		return c.redact(raw)
-	}
-	var data map[string]any
-	if !ossecObject(raw, &data) {
-		return c.redact(raw)
-	}
-	pending := []any{data}
-	for len(pending) > 0 {
-		item := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		switch value := item.(type) {
-		case map[string]any:
-			keys := make([]string, 0, len(value))
-			for key := range value {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				child := value[key]
-				if text, ok := child.(string); ok {
-					child = c.redact(text)
-				} else {
-					pending = append(pending, child)
-				}
-				safeKey := c.redact(key)
-				if safeKey != key {
-					delete(value, key)
-				}
-				value[safeKey] = child
-			}
-		case []any:
-			for i, child := range value {
-				if text, ok := child.(string); ok {
-					value[i] = c.redact(text)
-				} else {
-					pending = append(pending, child)
-				}
-			}
-		}
-	}
-	encoded, err := json.Marshal(data)
-	if err != nil {
-		return "[OSSEC JSON could not be safely redacted]"
-	}
-	return c.redact(string(encoded))
 }

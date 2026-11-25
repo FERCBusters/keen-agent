@@ -170,8 +170,8 @@ func collectFile(c Config, s Source, sp *Spool, path string) error {
 			}
 		} else if filter(s, line) {
 			redacted := c.redact(strings.TrimRight(line, "\r\n"))
-			if s.Parser == "ossec" {
-				redacted = c.redactOSSEC(strings.TrimRight(line, "\r\n"))
+			if jsonRecords(s.Parser) {
+				redacted = c.redactJSON(strings.TrimRight(line, "\r\n"))
 			}
 			if len(redacted) > maxRecord {
 				if e = sp.reject(); e != nil {

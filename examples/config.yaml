@@ -106,3 +106,13 @@ sources:
   #     - field: ossec.rule.id
   #       operator: equals
   #       value: '5701'
+
+  # Tetragon's JSON export; see docs/tetragon.md for export flags and permissions.
+  # - name: tetragon
+  #   kind: file
+  #   parser: tetragon
+  #   paths:
+  #     - /var/log/tetragon/tetragon.log
+  #     - /var/log/tetragon/tetragon-*.log
+  #   tetragon_levels:
+  #     anomaly-secret-reads: 10

@@ -264,6 +264,8 @@ func recognise(s Source, e Event) *recognised {
 			"product": "ossec", "rule_id": f["ossec.rule.id"], "level": f["ossec.rule.level"], "description": f["ossec.rule.description"],
 			"groups": groups, "category": e.Action,
 		}, "", ""}
+	case "tetragon":
+		return recogniseTetragon(e)
 	}
 	return nil
 }
