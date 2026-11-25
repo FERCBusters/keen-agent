@@ -59,7 +59,9 @@ func TestTetragonSecretReadIsASecurityAlert(t *testing.T) {
 		t.Fatal(envs[0])
 	}
 	text := canonical(t, envs[0])
-	for _, private := range []string{"auid", "/root", "NTQ2MWViOWEy", "5461eb9a26a0"} {
+	// Anchored on a quote, or long enough, that no digest or pseudonym can
+	// contain them: any key ending in auid, any value starting /root.
+	for _, private := range []string{`auid"`, `"/root`, "NTQ2MWViOWEy", "5461eb9a26a0"} {
 		if strings.Contains(text, private) {
 			t.Fatalf("%q sent in events mode: %s", private, text)
 		}
@@ -111,10 +113,10 @@ func TestTetragonWatchedProgramStarts(t *testing.T) {
 		line, category, groups, description string
 		level                               int64
 	}{
-		{tetragonExecLine("/usr/bin/nc", "-l 4444", 1001, "/usr/bin/bash", 1001), "process.exec.watched", "[process_exec nc parent:bash]", "nc started by bash", 3},
-		{tetragonExecLine("/bin/sh", "-c id", 33, "/usr/sbin/nginx", 33), "process.exec.service_shell", "[process_exec sh parent:nginx]", "sh started by nginx", 9},
-		{tetragonExecLine("/usr/bin/passwd", "", 0, "/usr/bin/bash", 1001), "process.exec.watched", "[process_exec passwd parent:bash setuid]", "passwd started by bash", 3},
-		{tetragonExecLine("/usr/bin/tcpdump", "-i eth0", 0, "", 0), "process.exec.watched", "[process_exec tcpdump]", "tcpdump started by an unknown parent", 3},
+		{tetragonExecLine("/usr/bin/nc", "-l arg:4444", 1001, "/usr/bin/bash", 1001), "process.exec.watched", "[process_exec nc parent:bash]", "nc started by bash", 3},
+		{tetragonExecLine("/bin/sh", "-c arg:id", 33, "/usr/sbin/nginx", 33), "process.exec.service_shell", "[process_exec sh parent:nginx]", "sh started by nginx", 9},
+		{tetragonExecLine("/usr/bin/passwd", "arg:alice", 0, "/usr/bin/bash", 1001), "process.exec.watched", "[process_exec passwd parent:bash setuid]", "passwd started by bash", 3},
+		{tetragonExecLine("/usr/bin/tcpdump", "-i arg:eth0", 0, "", 0), "process.exec.watched", "[process_exec tcpdump]", "tcpdump started by an unknown parent", 3},
 	} {
 		envs := classify(t, z, s, tc.line)
 		if len(envs) != 1 || envs[0]["event_type"] != "security.alert.generated" {
@@ -124,7 +126,9 @@ func TestTetragonWatchedProgramStarts(t *testing.T) {
 		if got["rule_id"] != "process_exec" || got["category"] != tc.category || got["level"] != tc.level || got["description"] != tc.description || fmt.Sprint(got["groups"]) != tc.groups {
 			t.Fatal(got)
 		}
-		if strings.Contains(canonical(t, envs[0]), "4444") || strings.Contains(canonical(t, envs[0]), "eth0") {
+		// Hex digests and base64 never contain a colon, and in JSON one after
+		// a key follows a quote, so only the arguments can produce "arg:".
+		if strings.Contains(canonical(t, envs[0]), "arg:") {
 			t.Fatal("arguments sent in events mode")
 		}
 	}
@@ -186,7 +190,7 @@ func TestTetragonNetworkTagsAndPrivacy(t *testing.T) {
 	if e.Summary != "backup-tool read /home/~/.ssh/id_ed25519" || e.Fields["process.executable"] != "/home/~/bin/backup-tool" || e.Fields["file.path"] != "/home/~/.ssh/id_ed25519" {
 		t.Fatal(e)
 	}
-	if text := canonical(t, classify(t, z, s, tetragonHomeKeyRead)[0]); strings.Contains(text, "alice") {
+	if text := canonical(t, classify(t, z, s, tetragonHomeKeyRead)[0]); strings.Contains(text, "/home/alice") || !strings.Contains(text, "/home/~/.ssh/id_ed25519") {
 		t.Fatal("account name sent:", text)
 	}
 	// A record without any account has no subject.
